@@ -1,0 +1,56 @@
+FROM golang:1.26-bookworm AS agent-builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+# BuildKit 多架构构建时注入 TARGET*；与最终镜像架构一致（勿写死 amd64）
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/openclaw-agent ./cmd/openclaw-agent
+
+FROM node:22-bookworm-slim AS node-runtime
+
+FROM lscr.io/linuxserver/webtop:ubuntu-xfce
+
+ENV PUID=1000
+ENV PGID=1000
+ENV TZ=Asia/Shanghai
+
+LABEL shm_size="1gb"
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-runtime /usr/local /usr/local
+
+RUN npm install -g openclaw@v2026.4.15
+
+COPY defaults-template/.config /defaults/.config
+# Seed the runtime template under /defaults so the first /config sync gets the
+# tracked OpenClaw config plus any files the image expects to manage.
+COPY defaults-template/.openclaw /defaults/.openclaw
+COPY config/openclaw-agent /defaults/openclaw-agent
+COPY --from=agent-builder /out/openclaw-agent /usr/local/bin/openclaw-agent
+COPY scripts/openclaw-agent-run /etc/services.d/openclaw-agent/run
+COPY scripts/openclaw-agent-finish /etc/services.d/openclaw-agent/finish
+
+# Preinstall the DingTalk channel so its channel id validates before the
+# agent's first startup reconciliation.
+RUN sed -i 's/\r$//' /etc/services.d/openclaw-agent/run \
+  && sed -i 's/\r$//' /etc/services.d/openclaw-agent/finish \
+  && chmod +x /etc/services.d/openclaw-agent/run \
+  && chmod +x /etc/services.d/openclaw-agent/finish \
+  && chmod +x /usr/local/bin/openclaw-agent \
+  && HOME=/defaults openclaw plugins install @dingtalk-real-ai/dingtalk-connector \
+  && chown -R abc:abc /defaults/.openclaw \
+  && chown -R abc:abc /defaults/.config \
+  && mkdir -p /var/lib/openclaw-agent /var/log/openclaw-agent /etc/openclaw-agent
+
+EXPOSE 3000 3001

@@ -1,0 +1,1654 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export HOME="${HOME:-/config}"
+export HERMES_HOME="${HERMES_HOME:-/config/.hermes}"
+
+mkdir -p "${HERMES_HOME}"
+
+python_bin="/usr/local/lib/hermes-agent/venv/bin/python"
+if [ ! -x "${python_bin}" ]; then
+    python_bin="$(command -v python3 || command -v python)"
+fi
+
+"${python_bin}" <<'PY'
+import os
+import json
+import hashlib
+import re
+from pathlib import Path
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+import yaml
+
+
+def first_env(*names):
+    for name in names:
+        value = os.environ.get(name, "")
+        if value and value.strip():
+            return name, value.strip()
+    return "", ""
+
+
+BOOTSTRAP_ENV_NAMES = {
+    "manifest": (
+        "CLAWMANAGER_HERMES_BOOTSTRAP_MANIFEST_JSON",
+        "CLAWMANAGER_RUNTIME_BOOTSTRAP_MANIFEST_JSON",
+        "CLAWMANAGER_OPENCLAW_BOOTSTRAP_MANIFEST_JSON",
+    ),
+    "channels": (
+        "CLAWMANAGER_HERMES_CHANNELS_JSON",
+        "CLAWMANAGER_RUNTIME_CHANNELS_JSON",
+        "CLAWMANAGER_OPENCLAW_CHANNELS_JSON",
+    ),
+    "skills": (
+        "CLAWMANAGER_HERMES_SKILLS_JSON",
+        "CLAWMANAGER_RUNTIME_SKILLS_JSON",
+        "CLAWMANAGER_OPENCLAW_SKILLS_JSON",
+    ),
+}
+
+
+def unique_nonempty(values):
+    result = []
+    seen = set()
+    for value in values:
+        item = str(value or "").strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        result.append(item)
+        seen.add(key)
+    return result
+
+
+def parse_models(value):
+    raw = (value or "").strip()
+    if not raw:
+        return []
+
+    parsed = None
+    json_raw = raw.replace('\\"', '"')
+    if json_raw[0] in "[{":
+        try:
+            parsed = json.loads(json_raw)
+        except Exception:
+            parsed = None
+
+    if isinstance(parsed, list):
+        values = []
+        for item in parsed:
+            if isinstance(item, str):
+                values.append(item)
+            elif isinstance(item, dict):
+                for key in ("model", "default", "name", "id"):
+                    if item.get(key):
+                        values.append(item[key])
+                        break
+        return unique_nonempty(values)
+
+    if isinstance(parsed, dict):
+        values = []
+        models = parsed.get("models")
+        if isinstance(models, list):
+            values.extend(models)
+        elif isinstance(models, dict):
+            values.extend(models.keys())
+        for key in ("model", "default", "name", "id"):
+            value = str(parsed.get(key, "")).strip()
+            if value:
+                values.append(value)
+        return unique_nonempty(values)
+
+    if raw.startswith("[") and raw.endswith("]"):
+        values = [
+            item.strip().strip("\"'")
+            for item in raw[1:-1].split(",")
+            if item.strip().strip("\"'")
+        ]
+        return unique_nonempty(values)
+
+    if "," in raw:
+        return unique_nonempty(raw.split(","))
+
+    return [raw]
+
+
+def parse_jsonish(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    json_raw = raw.replace('\\"', '"')
+    try:
+        return json.loads(json_raw)
+    except Exception:
+        pass
+
+    if raw[0] in "[{":
+        try:
+            return yaml.safe_load(raw)
+        except Exception:
+            return None
+
+    return None
+
+
+def parse_env_json(*names):
+    name, value = first_env(*names)
+    if not value:
+        return "", None
+    parsed = parse_jsonish(value)
+    return name, parsed if parsed is not None else value
+
+
+def read_priority_json(kind, *extra_names):
+    names = (*BOOTSTRAP_ENV_NAMES.get(kind, ()), *extra_names)
+    source, raw = first_env(*names)
+    if not raw:
+        return {
+            "kind": kind,
+            "source_env": "",
+            "raw_sha256": "",
+            "parsed": None,
+            "error": "",
+        }
+    parsed = parse_jsonish(raw)
+    error = "" if parsed is not None else f"{source} contains invalid JSON"
+    return {
+        "kind": kind,
+        "source_env": source,
+        "raw_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "parsed": parsed,
+        "error": error,
+    }
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def write_json_secure(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    path.chmod(0o600)
+
+
+def bootstrap_dir(hermes_home):
+    return hermes_home / "hermes-agent" / "bootstrap"
+
+
+def persist_bootstrap_payload(hermes_home, name, payload):
+    write_json_secure(bootstrap_dir(hermes_home) / f"{name}.json", payload)
+
+
+def safe_key(value, fallback="item"):
+    raw = str(value or "").strip().lower()
+    raw = re.sub(r"[^a-z0-9_.-]+", "-", raw)
+    raw = raw.strip(".-")
+    return raw or fallback
+
+
+def parse_list_value(value, path_mode=False):
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        items = []
+        for item in value:
+            if isinstance(item, dict):
+                for key in ("path", "dir", "directory", "name", "id", "value"):
+                    if item.get(key):
+                        items.append(item[key])
+                        break
+            else:
+                items.append(item)
+        return unique_nonempty(items)
+
+    if isinstance(value, dict):
+        for key in ("external_dirs", "dirs", "directories", "paths", "items", "values", "skills"):
+            if key in value:
+                return parse_list_value(value.get(key), path_mode=path_mode)
+        return unique_nonempty(value.keys())
+
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    parsed = parse_jsonish(raw)
+    if parsed is not None and parsed is not value:
+        return parse_list_value(parsed, path_mode=path_mode)
+
+    if raw.startswith("[") and raw.endswith("]"):
+        return unique_nonempty(
+            item.strip().strip("\"'")
+            for item in raw[1:-1].split(",")
+        )
+
+    separators = [",", ";"]
+    if path_mode:
+        separators.append(":")
+
+    values = [raw]
+    for separator in separators:
+        if separator in raw:
+            values = raw.split(separator)
+            break
+
+    return unique_nonempty(values)
+
+
+def env_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    raw = str(value or "").strip().lower()
+    if raw in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return None
+
+
+def parse_int(value):
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def first_field(mapping, *names):
+    if not isinstance(mapping, dict):
+        return None
+    for name in names:
+        if name in mapping and mapping[name] not in (None, ""):
+            return mapping[name]
+    return None
+
+
+def deep_merge(base, extra):
+    if not isinstance(base, dict):
+        base = {}
+    if not isinstance(extra, dict):
+        return base
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def normalize_platform(value):
+    raw = str(value or "").strip().lower().replace("-", "_")
+    for suffix in ("_connector", "_channel", "_bot", "_adapter", "_gateway"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)]
+    aliases = {
+        "lark": "feishu",
+        "feishu_connector": "feishu",
+        "dingtalk_connector": "dingtalk",
+        "wechat": "weixin",
+        "weixin": "weixin",
+        "wecom": "wecom",
+        "wecom_callback": "wecom_callback",
+        "enterprise_wechat": "wecom",
+        "qq": "qqbot",
+        "qq_bot": "qqbot",
+        "qqbot": "qqbot",
+        "home_assistant": "homeassistant",
+        "ha": "homeassistant",
+        "api": "api_server",
+        "api_server": "api_server",
+        "blue_bubbles": "bluebubbles",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    for platform in (
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "signal",
+        "mattermost",
+        "matrix",
+        "dingtalk",
+        "feishu",
+        "wecom_callback",
+        "wecom",
+        "weixin",
+        "qqbot",
+        "yuanbao",
+        "bluebubbles",
+        "api_server",
+        "webhook",
+    ):
+        if raw == platform or raw.startswith(platform + "_"):
+            return platform
+    return raw
+
+
+PLATFORM_ENV_PREFIX = {
+    "telegram": "TELEGRAM",
+    "discord": "DISCORD",
+    "slack": "SLACK",
+    "whatsapp": "WHATSAPP",
+    "signal": "SIGNAL",
+    "mattermost": "MATTERMOST",
+    "matrix": "MATRIX",
+    "homeassistant": "HASS",
+    "email": "EMAIL",
+    "sms": "SMS",
+    "dingtalk": "DINGTALK",
+    "feishu": "FEISHU",
+    "wecom": "WECOM",
+    "wecom_callback": "WECOM_CALLBACK",
+    "weixin": "WEIXIN",
+    "qqbot": "QQBOT",
+    "yuanbao": "YUANBAO",
+    "bluebubbles": "BLUEBUBBLES",
+    "api_server": "API_SERVER",
+    "webhook": "WEBHOOK",
+}
+
+TOKEN_ENV = {
+    "telegram": "TELEGRAM_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN",
+    "slack": "SLACK_BOT_TOKEN",
+    "mattermost": "MATTERMOST_TOKEN",
+    "matrix": "MATRIX_ACCESS_TOKEN",
+    "weixin": "WEIXIN_TOKEN",
+}
+
+HOME_CHANNEL_ENV = {
+    "matrix": "MATRIX_HOME_ROOM",
+    "qqbot": "QQBOT_HOME_CHANNEL",
+}
+
+HOME_CHANNEL_NAME_ENV = {
+    "matrix": "MATRIX_HOME_ROOM_NAME",
+    "qqbot": "QQBOT_HOME_CHANNEL_NAME",
+}
+
+FREE_RESPONSE_ENV = {
+    "telegram": "TELEGRAM_FREE_RESPONSE_CHATS",
+    "whatsapp": "WHATSAPP_FREE_RESPONSE_CHATS",
+    "matrix": "MATRIX_FREE_RESPONSE_ROOMS",
+    "dingtalk": "DINGTALK_FREE_RESPONSE_CHATS",
+    "weixin": "WEIXIN_FREE_RESPONSE_CHATS",
+}
+
+PLATFORM_FIELD_ENV = {
+    "telegram": {
+        "proxy": "TELEGRAM_PROXY",
+        "proxy_url": "TELEGRAM_PROXY",
+        "webhook_url": "TELEGRAM_WEBHOOK_URL",
+        "webhook_port": "TELEGRAM_WEBHOOK_PORT",
+        "webhook_secret": "TELEGRAM_WEBHOOK_SECRET",
+        "ignored_threads": "TELEGRAM_IGNORED_THREADS",
+        "group_allowed_chats": "TELEGRAM_GROUP_ALLOWED_USERS",
+        "fallback_ips": "TELEGRAM_FALLBACK_IPS",
+    },
+    "slack": {
+        "app_token": "SLACK_APP_TOKEN",
+        "signing_secret": "SLACK_SIGNING_SECRET",
+        "strict_mention": "SLACK_STRICT_MENTION",
+        "allow_bots": "SLACK_ALLOW_BOTS",
+    },
+    "signal": {
+        "http_url": "SIGNAL_HTTP_URL",
+        "account": "SIGNAL_ACCOUNT",
+    },
+    "mattermost": {
+        "url": "MATTERMOST_URL",
+        "server_url": "MATTERMOST_URL",
+    },
+    "matrix": {
+        "homeserver": "MATRIX_HOMESERVER",
+        "user_id": "MATRIX_USER_ID",
+        "password": "MATRIX_PASSWORD",
+        "device_id": "MATRIX_DEVICE_ID",
+        "encryption": "MATRIX_ENCRYPTION",
+    },
+    "dingtalk": {
+        "client_id": "DINGTALK_CLIENT_ID",
+        "client_secret": "DINGTALK_CLIENT_SECRET",
+        "corp_id": "DINGTALK_CORP_ID",
+        "robot_code": "DINGTALK_ROBOT_CODE",
+        "card_template_id": "DINGTALK_CARD_TEMPLATE_ID",
+    },
+    "feishu": {
+        "app_id": "FEISHU_APP_ID",
+        "app_secret": "FEISHU_APP_SECRET",
+        "encrypt_key": "FEISHU_ENCRYPT_KEY",
+        "verification_token": "FEISHU_VERIFICATION_TOKEN",
+        "domain": "FEISHU_DOMAIN",
+        "connection_mode": "FEISHU_CONNECTION_MODE",
+        "webhook_host": "FEISHU_WEBHOOK_HOST",
+        "webhook_port": "FEISHU_WEBHOOK_PORT",
+        "webhook_path": "FEISHU_WEBHOOK_PATH",
+        "group_policy": "FEISHU_GROUP_POLICY",
+        "bot_open_id": "FEISHU_BOT_OPEN_ID",
+        "bot_user_id": "FEISHU_BOT_USER_ID",
+        "bot_name": "FEISHU_BOT_NAME",
+    },
+    "wecom": {
+        "bot_id": "WECOM_BOT_ID",
+        "secret": "WECOM_SECRET",
+        "websocket_url": "WECOM_WEBSOCKET_URL",
+    },
+    "wecom_callback": {
+        "corp_id": "WECOM_CALLBACK_CORP_ID",
+        "corp_secret": "WECOM_CALLBACK_CORP_SECRET",
+        "agent_id": "WECOM_CALLBACK_AGENT_ID",
+        "token": "WECOM_CALLBACK_TOKEN",
+        "encoding_aes_key": "WECOM_CALLBACK_ENCODING_AES_KEY",
+        "host": "WECOM_CALLBACK_HOST",
+        "port": "WECOM_CALLBACK_PORT",
+    },
+    "weixin": {
+        "account_id": "WEIXIN_ACCOUNT_ID",
+        "base_url": "WEIXIN_BASE_URL",
+        "cdn_base_url": "WEIXIN_CDN_BASE_URL",
+        "dm_policy": "WEIXIN_DM_POLICY",
+        "group_policy": "WEIXIN_GROUP_POLICY",
+        "split_multiline_messages": "WEIXIN_SPLIT_MULTILINE_MESSAGES",
+    },
+    "qqbot": {
+        "app_id": "QQBOT_APP_ID",
+        "client_secret": "QQBOT_CLIENT_SECRET",
+        "secret": "QQBOT_CLIENT_SECRET",
+    },
+    "bluebubbles": {
+        "server_url": "BLUEBUBBLES_SERVER_URL",
+        "password": "BLUEBUBBLES_PASSWORD",
+    },
+    "yuanbao": {
+        "app_id": "YUANBAO_APP_ID",
+        "app_secret": "YUANBAO_APP_SECRET",
+    },
+}
+
+
+PLATFORM_CONFIG_KEYS = {
+    "telegram": {
+        "require_mention",
+        "mention_patterns",
+        "free_response_chats",
+        "ignored_threads",
+        "group_allowed_chats",
+        "proxy_url",
+        "reactions",
+        "disable_link_previews",
+    },
+    "slack": {
+        "require_mention",
+        "mention_patterns",
+        "free_response_channels",
+        "unauthorized_dm_behavior",
+        "reply_prefix",
+        "strict_mention",
+        "allow_bots",
+        "reactions",
+        "channel_skill_bindings",
+        "channel_prompts",
+    },
+    "dingtalk": {
+        "require_mention",
+        "mention_patterns",
+        "free_response_chats",
+        "allowed_users",
+    },
+    "feishu": {
+        "group_policy",
+    },
+}
+
+PLATFORM_EXTRA_KEYS = {
+    "telegram": {"dm_topics", "group_topics", "fallback_ips"},
+    "slack": {"reply_in_thread", "reply_broadcast"},
+}
+
+
+FIELD_ALIASES = {
+    "resourceKey": "resource_key",
+    "channelId": "channel_id",
+    "homeChannel": "home_channel",
+    "homeChannelId": "home_channel_id",
+    "homeChannelName": "home_channel_name",
+    "channelName": "channel_name",
+    "roomId": "room_id",
+    "roomName": "room_name",
+    "chatId": "chat_id",
+    "chatName": "chat_name",
+    "conversationId": "conversation_id",
+    "displayName": "display_name",
+    "botToken": "bot_token",
+    "botUserOAuthToken": "bot_token",
+    "botOAuthToken": "bot_token",
+    "apiToken": "api_token",
+    "accessToken": "access_token",
+    "bearerToken": "bearer_token",
+    "appToken": "app_token",
+    "appLevelToken": "app_token",
+    "socketToken": "app_token",
+    "signingSecret": "signing_secret",
+    "clientId": "client_id",
+    "clientSecret": "client_secret",
+    "corpId": "corp_id",
+    "corpSecret": "corp_secret",
+    "agentId": "agent_id",
+    "appId": "app_id",
+    "appSecret": "app_secret",
+    "encryptKey": "encrypt_key",
+    "verificationToken": "verification_token",
+    "connectionMode": "connection_mode",
+    "webhookUrl": "webhook_url",
+    "webhookPort": "webhook_port",
+    "webhookHost": "webhook_host",
+    "webhookPath": "webhook_path",
+    "webhookSecret": "webhook_secret",
+    "defaultAccount": "default_account",
+    "allowFrom": "allow_from",
+    "allowedUsers": "allowed_users",
+    "groupAllowFrom": "group_allow_from",
+    "groupAllowedUsers": "group_allowed_users",
+    "allowAllUsers": "allow_all_users",
+    "requireMention": "require_mention",
+    "mentionPatterns": "mention_patterns",
+    "replyToMode": "reply_to_mode",
+    "replyInThread": "reply_in_thread",
+    "replyBroadcast": "reply_broadcast",
+    "replyPrefix": "reply_prefix",
+    "freeResponse": "free_response",
+    "freeResponseChats": "free_response_chats",
+    "freeResponseChannels": "free_response_channels",
+    "freeResponseRooms": "free_response_rooms",
+    "allowedChannels": "allowed_channels",
+    "ignoredChannels": "ignored_channels",
+    "ignoredThreads": "ignored_threads",
+    "groupAllowedChats": "group_allowed_chats",
+    "noThreadChannels": "no_thread_channels",
+    "autoThread": "auto_thread",
+    "strictMention": "strict_mention",
+    "allowBots": "allow_bots",
+    "dmPolicy": "dm_policy",
+    "groupPolicy": "group_policy",
+    "unauthorizedDmBehavior": "unauthorized_dm_behavior",
+    "channelSkillBindings": "channel_skill_bindings",
+    "channelPrompts": "channel_prompts",
+    "splitMultilineMessages": "split_multiline_messages",
+    "serverUrl": "server_url",
+    "websocketUrl": "websocket_url",
+    "encodingAesKey": "encoding_aes_key",
+    "cardTemplateId": "card_template_id",
+    "robotCode": "robot_code",
+    "botOpenId": "bot_open_id",
+    "botUserId": "bot_user_id",
+    "botName": "bot_name",
+    "disableLinkPreviews": "disable_link_previews",
+    "fallbackIps": "fallback_ips",
+    "dmTopics": "dm_topics",
+    "groupTopics": "group_topics",
+}
+
+
+def to_snake_key(key):
+    if key in FIELD_ALIASES:
+        return FIELD_ALIASES[key]
+    key = str(key)
+    key = key.replace("-", "_")
+    key = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", key)
+    key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    return key.lower()
+
+
+def normalize_mapping_keys(value):
+    if isinstance(value, dict):
+        return {to_snake_key(k): normalize_mapping_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_mapping_keys(item) for item in value]
+    return value
+
+
+def merge_default_account(entry):
+    accounts = entry.get("accounts")
+    if not isinstance(accounts, dict) or not accounts:
+        return entry
+
+    default_account = str(entry.get("default_account") or "").strip()
+    selected = None
+    if default_account and isinstance(accounts.get(default_account), dict):
+        selected = accounts[default_account]
+    if selected is None:
+        for account in accounts.values():
+            if isinstance(account, dict) and parse_bool(account.get("enabled")) is not False:
+                selected = account
+                break
+    if selected is None:
+        for account in accounts.values():
+            if isinstance(account, dict):
+                selected = account
+                break
+
+    if isinstance(selected, dict):
+        normalized = normalize_mapping_keys(selected)
+        for key, value in normalized.items():
+            entry.setdefault(key, value)
+    return entry
+
+
+def normalize_channel_entry(entry, resource_key=""):
+    normalized = normalize_mapping_keys(entry)
+    if resource_key:
+        normalized.setdefault("resource_key", resource_key)
+    normalized = merge_default_account(normalized)
+    return normalized
+
+
+def native_messaging_prefixes():
+    prefixes = {f"{prefix}_" for prefix in PLATFORM_ENV_PREFIX.values()}
+    prefixes.update({"QQ_", "HOMEASSISTANT_"})
+    return tuple(sorted(prefixes))
+
+
+PREFIXED_ENV_ALIASES = {
+    "TELEGRAM_TOKEN": "TELEGRAM_BOT_TOKEN",
+    "DISCORD_TOKEN": "DISCORD_BOT_TOKEN",
+    "SLACK_TOKEN": "SLACK_BOT_TOKEN",
+    "MATRIX_TOKEN": "MATRIX_ACCESS_TOKEN",
+    "MATTERMOST_BOT_TOKEN": "MATTERMOST_TOKEN",
+    "WECHAT_TOKEN": "WEIXIN_TOKEN",
+    "QQ_APP_ID": "QQBOT_APP_ID",
+    "QQ_CLIENT_SECRET": "QQBOT_CLIENT_SECRET",
+}
+
+
+def collect_prefixed_messaging_env():
+    updates = {}
+    sources = []
+    native_prefixes = native_messaging_prefixes()
+    wrapper_prefixes = (
+        "CLAWMANAGER_CHANNEL_",
+        "CLAWMANAGER_MESSAGING_",
+        "CLAWMANAGER_MESSAGE_",
+        "CLAWMANAGER_",
+    )
+
+    for key, value in os.environ.items():
+        value = str(value or "").strip()
+        if not value:
+            continue
+        if key.startswith(native_prefixes):
+            updates[PREFIXED_ENV_ALIASES.get(key, key)] = value
+            sources.append(key)
+            continue
+        for wrapper in wrapper_prefixes:
+            if key.startswith(wrapper):
+                native_key = key[len(wrapper):]
+                if native_key.startswith(native_prefixes):
+                    target = PREFIXED_ENV_ALIASES.get(native_key, native_key)
+                    updates[target] = value
+                    sources.append(key)
+                break
+    return updates, sources
+
+
+def channel_entries_from_value(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        entries = []
+        for item in value:
+            if isinstance(item, dict):
+                resource_key = first_field(item, "resource_key", "key", "id", "name")
+                entries.append(normalize_channel_entry(item, str(resource_key or "")))
+        return entries
+    if not isinstance(value, dict):
+        return []
+
+    for key in ("channels", "message_channels", "messaging_channels"):
+        if isinstance(value.get(key), list):
+            entries = []
+            for item in value[key]:
+                if isinstance(item, dict):
+                    resource_key = first_field(item, "resource_key", "key", "id", "name")
+                    entries.append(normalize_channel_entry(item, str(resource_key or "")))
+            return entries
+
+    entries = []
+    skip = {
+        "schemaVersion",
+        "schema_version",
+        "gateway",
+        "session_reset",
+        "default_reset_policy",
+        "reset_by_type",
+        "reset_by_platform",
+        "reset_triggers",
+        "skills",
+    }
+    for platform, config in value.items():
+        if platform in skip:
+            continue
+        if isinstance(config, dict):
+            item = normalize_channel_entry(config, str(platform))
+            item.setdefault("platform", item.get("domain") or platform)
+            entries.append(item)
+        elif isinstance(config, list):
+            for entry in config:
+                if isinstance(entry, dict):
+                    item = normalize_channel_entry(entry, str(platform))
+                    item.setdefault("platform", item.get("domain") or platform)
+                    entries.append(item)
+    return entries
+
+
+def set_env_from_field(env_updates, entry, target, *fields):
+    value = first_field(entry, *fields)
+    value = env_value(value)
+    if value:
+        env_updates[target] = value
+        return True
+    return False
+
+
+def env_value_for_key(key, value):
+    if key == "mention_patterns" and isinstance(value, (list, tuple, set)):
+        return json.dumps(list(value), ensure_ascii=False)
+    if key in {"dm_topics", "group_topics", "channel_skill_bindings", "channel_prompts"} and isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return env_value(value)
+
+
+def merge_platform_section(sections, platform, entry):
+    section = sections.get(platform)
+    if not isinstance(section, dict):
+        section = {}
+
+    for key in PLATFORM_CONFIG_KEYS.get(platform, set()):
+        if key in entry:
+            section[key] = entry[key]
+
+    extra = section.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+    for key in PLATFORM_EXTRA_KEYS.get(platform, set()):
+        if key in entry:
+            extra[key] = entry[key]
+    if extra:
+        section["extra"] = extra
+
+    if section:
+        sections[platform] = section
+
+
+def apply_channel_entry(entry, env_updates, platforms_cfg):
+    entry = normalize_channel_entry(entry, str(entry.get("resource_key", "")))
+    platform = normalize_platform(
+        first_field(entry, "platform", "type", "provider", "channel", "kind")
+        or entry.get("resource_key")
+    )
+    prefix = PLATFORM_ENV_PREFIX.get(platform)
+    if not prefix:
+        return ""
+
+    enabled = parse_bool(entry.get("enabled"))
+    if enabled is False:
+        return ""
+
+    platform_cfg = platforms_cfg.get(platform)
+    if not isinstance(platform_cfg, dict):
+        platform_cfg = {}
+    platform_cfg["enabled"] = True if enabled is None else enabled
+
+    token_target = TOKEN_ENV.get(platform)
+    if token_target:
+        set_env_from_field(
+            env_updates,
+            entry,
+            token_target,
+            "bot_token",
+            "token",
+            "api_token",
+            "access_token",
+            "bearer_token",
+        )
+
+    home_target = HOME_CHANNEL_ENV.get(platform, f"{prefix}_HOME_CHANNEL")
+    has_home = set_env_from_field(
+        env_updates,
+        entry,
+        home_target,
+        "home_channel",
+        "home_channel_id",
+        "channel_id",
+        "chat_id",
+        "room_id",
+        "room",
+        "conversation_id",
+        "recipient",
+        "id",
+    )
+
+    home_name_target = HOME_CHANNEL_NAME_ENV.get(platform, f"{prefix}_HOME_CHANNEL_NAME")
+    has_home_name = set_env_from_field(
+        env_updates,
+        entry,
+        home_name_target,
+        "home_channel_name",
+        "channel_name",
+        "room_name",
+        "chat_name",
+        "display_name",
+        "name",
+    )
+    if has_home:
+        platform_cfg["home_channel"] = {
+            "platform": platform,
+            "chat_id": env_updates[home_target],
+            "name": env_updates.get(home_name_target, "Home"),
+        }
+    elif has_home_name:
+        extra = platform_cfg.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
+            platform_cfg["extra"] = extra
+        extra["home_channel_name"] = env_updates[home_name_target]
+
+    common_fields = {
+        "allowed_users": f"{prefix}_ALLOWED_USERS",
+        "allow_from": f"{prefix}_ALLOWED_USERS",
+        "group_allowed_users": f"{prefix}_GROUP_ALLOWED_USERS",
+        "group_allow_from": f"{prefix}_GROUP_ALLOWED_USERS",
+        "allow_all_users": f"{prefix}_ALLOW_ALL_USERS",
+        "require_mention": f"{prefix}_REQUIRE_MENTION",
+        "mention_patterns": f"{prefix}_MENTION_PATTERNS",
+        "reply_to_mode": f"{prefix}_REPLY_TO_MODE",
+        "allowed_channels": f"{prefix}_ALLOWED_CHANNELS",
+        "ignored_channels": f"{prefix}_IGNORED_CHANNELS",
+        "no_thread_channels": f"{prefix}_NO_THREAD_CHANNELS",
+        "auto_thread": f"{prefix}_AUTO_THREAD",
+        "reactions": f"{prefix}_REACTIONS",
+        "dm_policy": f"{prefix}_DM_POLICY",
+        "group_policy": f"{prefix}_GROUP_POLICY",
+    }
+    for source_key, target in common_fields.items():
+        if source_key in entry:
+            env_updates[target] = env_value_for_key(source_key, entry[source_key])
+            if source_key in {
+                "allowed_users",
+                "allow_from",
+                "group_allowed_users",
+                "group_allow_from",
+                "require_mention",
+                "mention_patterns",
+                "free_response_channels",
+                "free_response_chats",
+                "free_response_rooms",
+                "dm_policy",
+                "group_policy",
+            }:
+                config_key = source_key
+                if source_key == "allow_from":
+                    config_key = "allowed_users"
+                elif source_key == "group_allow_from":
+                    config_key = "group_allowed_users"
+                platform_cfg[config_key] = entry[source_key]
+
+    allow_from = parse_list_value(entry.get("allow_from"))
+    allowed_users = parse_list_value(entry.get("allowed_users"))
+    if "*" in allow_from or "*" in allowed_users or parse_bool(entry.get("allow_all_users")) is True:
+        env_updates[f"{prefix}_ALLOW_ALL_USERS"] = "true"
+
+    free_target = FREE_RESPONSE_ENV.get(platform, f"{prefix}_FREE_RESPONSE_CHANNELS")
+    if set_env_from_field(
+        env_updates,
+        entry,
+        free_target,
+        "free_response_channels",
+        "free_response_chats",
+        "free_response_rooms",
+        "free_response",
+    ):
+        if platform == "telegram":
+            platform_cfg["free_response_chats"] = env_updates[free_target]
+        elif platform == "matrix":
+            platform_cfg["free_response_rooms"] = env_updates[free_target]
+        else:
+            platform_cfg["free_response_channels"] = env_updates[free_target]
+
+    for source_key, target in PLATFORM_FIELD_ENV.get(platform, {}).items():
+        if source_key in entry:
+            env_updates[target] = env_value_for_key(source_key, entry[source_key])
+
+    if platform == "whatsapp":
+        env_updates.setdefault("WHATSAPP_ENABLED", "true")
+
+    reply_to_mode = first_field(entry, "reply_to_mode")
+    if reply_to_mode:
+        platform_cfg["reply_to_mode"] = env_value(reply_to_mode)
+
+    extra = platform_cfg.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+    resource_key = entry.get("resource_key")
+    if resource_key:
+        extra["clawmanager_channel_id"] = resource_key
+    for extra_key in ("prompt", "system_prompt", "channel_prompt"):
+        if extra_key in entry:
+            extra[extra_key] = entry[extra_key]
+    for extra_key in PLATFORM_EXTRA_KEYS.get(platform, set()):
+        if extra_key in entry:
+            extra[extra_key] = entry[extra_key]
+    if extra:
+        platform_cfg["extra"] = extra
+
+    platforms_cfg[platform] = platform_cfg
+    return platform
+
+
+def gateway_update_from_value(value, full=False):
+    if not isinstance(value, dict):
+        return {}
+
+    update = {}
+    if isinstance(value.get("gateway"), dict):
+        update = deep_merge(update, value["gateway"])
+
+    session_reset = value.get("session_reset")
+    if isinstance(session_reset, dict):
+        if any(key.startswith("reset_") or key == "default_reset_policy" for key in session_reset):
+            update = deep_merge(update, session_reset)
+        else:
+            update["default_reset_policy"] = session_reset
+
+    if full:
+        full_value = {
+            k: v
+            for k, v in value.items()
+            if k not in {"channels", "skills", "gateway", "session_reset"}
+        }
+        update = deep_merge(update, full_value)
+    else:
+        gateway_keys = {
+            "default_reset_policy",
+            "reset_by_type",
+            "reset_by_platform",
+            "reset_triggers",
+        }
+        for key in gateway_keys:
+            if key in value:
+                update[key] = value[key]
+    return update
+
+
+def update_json_file(path, updates):
+    if not updates:
+        return False
+    existing = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    merged = deep_merge(existing, updates)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    path.chmod(0o600)
+    return True
+
+
+def skill_items_from_value(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+    items = value.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    result = []
+    for key, item in value.items():
+        if key in {"schemaVersion", "schema_version"}:
+            continue
+        if isinstance(item, dict):
+            copied = dict(item)
+            copied.setdefault("key", key)
+            result.append(copied)
+    return result
+
+
+def markdown_skill_body(name, config):
+    if isinstance(config, dict):
+        for key in ("prompt", "instructions", "description", "content"):
+            value = config.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip() + "\n"
+    if isinstance(config, str) and config.strip():
+        return config.strip() + "\n"
+    return f"Use this ClawManager-injected skill when the task matches {name}.\n"
+
+
+def write_injected_skill(hermes_home, item):
+    item = normalize_mapping_keys(item)
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    content = normalize_mapping_keys(content)
+    config = content.get("config", {})
+
+    key = safe_key(item.get("key") or content.get("key") or item.get("name") or item.get("id"), "injected-skill")
+    name = str(item.get("name") or content.get("name") or key).strip()
+    version = str(item.get("version") or content.get("version") or "1").strip()
+    description = str(
+        item.get("description")
+        or (config.get("description") if isinstance(config, dict) else "")
+        or f"ClawManager injected skill: {name}"
+    ).strip()
+    platform_id = item.get("id")
+    skill_id = f"skill-{platform_id}" if platform_id not in (None, "") else key
+
+    skill_dir = hermes_home / "skills" / key
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    frontmatter = {
+        "name": key,
+        "description": description,
+        "version": version,
+        "metadata": {
+            "hermes": {
+                "source": "injected_by_clawmanager",
+                "skill_id": skill_id,
+                "clawmanager_key": key,
+            }
+        },
+    }
+    skill_md = (
+        "---\n"
+        + yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
+        + "---\n\n"
+        + f"# {name}\n\n"
+        + markdown_skill_body(name, config)
+    )
+    (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+    manifest = {
+        "skill_id": skill_id,
+        "identifier": key,
+        "name": key,
+        "display_name": name,
+        "skill_version": version,
+        "version": version,
+        "source": "injected_by_clawmanager",
+        "type": "hermes-skill",
+        "metadata": {
+            "runtime": "hermes",
+            "manifest": "skill.json",
+            "clawmanager": {
+                "id": platform_id,
+                "key": key,
+                "name": name,
+                "version": item.get("version"),
+                "tags": item.get("tags", []),
+                "content_format": content.get("format"),
+            },
+        },
+        "config": config if isinstance(config, dict) else {"prompt": config},
+    }
+    write_json_secure(skill_dir / "skill.json", manifest)
+    write_json_secure(skill_dir / "clawmanager-content.json", {"item": item, "content": content})
+
+    return {
+        "key": key,
+        "skill_id": skill_id,
+        "version": version,
+        "install_path": str(skill_dir),
+    }
+
+
+def apply_injected_skills(hermes_home):
+    payload = read_priority_json(
+        "skills",
+        "CLAWMANAGER_SKILLS_JSON",
+        "CLAWMANAGER_CONFIG_SKILLS_JSON",
+        "HERMES_SKILLS_JSON",
+    )
+    applied = []
+    errors = []
+    if payload["parsed"] is not None:
+        for item in skill_items_from_value(payload["parsed"]):
+            try:
+                applied.append(write_injected_skill(hermes_home, item))
+            except Exception as exc:
+                key = item.get("key") if isinstance(item, dict) else ""
+                errors.append({"key": key, "error": str(exc)})
+
+    record = {
+        "source_env": payload["source_env"],
+        "raw_sha256": payload["raw_sha256"],
+        "error": payload["error"],
+        "parsed": payload["parsed"],
+        "applied": applied,
+        "errors": errors,
+        "updated_at": utc_now(),
+    }
+    if payload["source_env"] or applied or payload["error"] or errors:
+        persist_bootstrap_payload(hermes_home, "skills", record)
+    return payload["source_env"], applied, payload["error"], errors
+
+
+def apply_skill_config(data, hermes_home):
+    sources = []
+    skills_cfg = data.get("skills")
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+
+    injected_src, injected_skills, injected_error, injected_errors = apply_injected_skills(hermes_home)
+    if injected_src:
+        sources.append(injected_src)
+
+    existing_dirs = skills_cfg.get("external_dirs")
+    if not isinstance(existing_dirs, list):
+        existing_dirs = []
+
+    dir_src, dir_value = first_env(
+        "CLAWMANAGER_SKILL_DIRS",
+        "CLAWMANAGER_SKILLS_EXTERNAL_DIRS",
+        "CLAWMANAGER_SKILLS_DIRS",
+        "HERMES_SKILL_DIRS",
+        "HERMES_SKILLS_EXTERNAL_DIRS",
+    )
+    injected_dirs = parse_list_value(dir_value, path_mode=True)
+    if dir_src:
+        sources.append(dir_src)
+
+    default_dirs = ["/config/hermes/skills", str(hermes_home / "skills")]
+    skills_cfg["external_dirs"] = unique_nonempty([*existing_dirs, *default_dirs, *injected_dirs])
+    for directory in skills_cfg["external_dirs"]:
+        expanded = os.path.expandvars(os.path.expanduser(str(directory)))
+        if expanded.startswith("/config/") or expanded in {"/config", str(hermes_home / "skills")}:
+            try:
+                Path(expanded).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+    template_src, template_value = first_env(
+        "CLAWMANAGER_SKILLS_TEMPLATE_VARS",
+        "HERMES_SKILLS_TEMPLATE_VARS",
+    )
+    if template_src:
+        parsed = parse_bool(template_value)
+        if parsed is not None:
+            skills_cfg["template_vars"] = parsed
+            sources.append(template_src)
+
+    inline_src, inline_value = first_env(
+        "CLAWMANAGER_SKILLS_INLINE_SHELL",
+        "HERMES_SKILLS_INLINE_SHELL",
+    )
+    if inline_src:
+        parsed = parse_bool(inline_value)
+        if parsed is not None:
+            skills_cfg["inline_shell"] = parsed
+            sources.append(inline_src)
+
+    timeout_src, timeout_value = first_env(
+        "CLAWMANAGER_SKILLS_INLINE_SHELL_TIMEOUT",
+        "HERMES_SKILLS_INLINE_SHELL_TIMEOUT",
+    )
+    if timeout_src:
+        parsed = parse_int(timeout_value)
+        if parsed is not None:
+            skills_cfg["inline_shell_timeout"] = parsed
+            sources.append(timeout_src)
+
+    config_src, skill_config = parse_env_json(
+        "CLAWMANAGER_SKILL_CONFIG",
+        "CLAWMANAGER_SKILLS_CONFIG",
+        "HERMES_SKILL_CONFIG",
+        "HERMES_SKILLS_CONFIG",
+    )
+    if config_src and isinstance(skill_config, dict):
+        current = skills_cfg.get("config")
+        if not isinstance(current, dict):
+            current = {}
+        skills_cfg["config"] = deep_merge(current, skill_config)
+        sources.append(config_src)
+
+    disabled_src, disabled_value = first_env(
+        "CLAWMANAGER_DISABLED_SKILLS",
+        "HERMES_DISABLED_SKILLS",
+    )
+    if disabled_src:
+        disabled = parse_list_value(disabled_value)
+        if disabled:
+            skills_cfg["disabled"] = disabled
+            sources.append(disabled_src)
+
+    data["skills"] = skills_cfg
+    return sources
+
+
+def apply_messaging_config(data, hermes_home):
+    env_updates, sources = collect_prefixed_messaging_env()
+
+    priority_channels = read_priority_json(
+        "channels",
+        "CLAWMANAGER_CHANNELS",
+        "CLAWMANAGER_MESSAGING_CHANNELS",
+        "CLAWMANAGER_MESSAGE_CHANNELS",
+        "CLAWMANAGER_CHANNEL_CONFIG",
+        "HERMES_CHANNELS",
+        "HERMES_MESSAGING_CHANNELS",
+    )
+    channel_src = priority_channels["source_env"]
+    channel_value = priority_channels["parsed"]
+
+    platforms_cfg = data.get("platforms")
+    if not isinstance(platforms_cfg, dict):
+        platforms_cfg = {}
+
+    configured_platforms = []
+    disabled_channels = []
+    unsupported_channels = []
+    platform_sections_cfg = {}
+    for entry in channel_entries_from_value(channel_value):
+        enabled = parse_bool(entry.get("enabled"))
+        if enabled is False:
+            disabled_channels.append(str(entry.get("resource_key") or entry.get("platform") or ""))
+            continue
+        platform = apply_channel_entry(entry, env_updates, platforms_cfg)
+        if platform:
+            configured_platforms.append(platform)
+            merge_platform_section(platform_sections_cfg, platform, entry)
+        else:
+            unsupported_channels.append(str(entry.get("resource_key") or entry.get("platform") or ""))
+
+    if configured_platforms:
+        data["platforms"] = platforms_cfg
+    for platform, section in platform_sections_cfg.items():
+        existing = data.get(platform)
+        if not isinstance(existing, dict):
+            existing = {}
+        data[platform] = deep_merge(existing, section)
+    if channel_src:
+        sources.append(channel_src)
+
+    channel_record = {
+        "source_env": channel_src,
+        "raw_sha256": priority_channels["raw_sha256"],
+        "error": priority_channels["error"],
+        "parsed": channel_value,
+        "applied": {
+            "configured_platforms": configured_platforms,
+            "disabled_channels": [item for item in disabled_channels if item],
+            "unsupported_channels": [item for item in unsupported_channels if item],
+        },
+        "updated_at": utc_now(),
+    }
+    if channel_src or configured_platforms or priority_channels["error"]:
+        persist_bootstrap_payload(hermes_home, "channels", channel_record)
+        write_json_secure(hermes_home / "channels.json", channel_record)
+
+    gateway_updates = gateway_update_from_value(channel_value, full=False)
+    gateway_src, gateway_value = parse_env_json(
+        "CLAWMANAGER_GATEWAY_CONFIG",
+        "CLAWMANAGER_MESSAGING_CONFIG",
+        "HERMES_GATEWAY_CONFIG",
+    )
+    if gateway_src:
+        gateway_updates = deep_merge(gateway_updates, gateway_update_from_value(gateway_value, full=True))
+        sources.append(gateway_src)
+
+    reset_src, reset_value = parse_env_json(
+        "CLAWMANAGER_CHANNEL_RESET_POLICY",
+        "CLAWMANAGER_MESSAGING_RESET_POLICY",
+        "HERMES_GATEWAY_RESET_POLICY",
+    )
+    if reset_src and isinstance(reset_value, dict):
+        gateway_updates["default_reset_policy"] = reset_value
+        sources.append(reset_src)
+
+    reset_platform_src, reset_platform_value = parse_env_json(
+        "CLAWMANAGER_CHANNEL_RESET_BY_PLATFORM",
+        "CLAWMANAGER_MESSAGING_RESET_BY_PLATFORM",
+        "HERMES_GATEWAY_RESET_BY_PLATFORM",
+    )
+    if reset_platform_src and isinstance(reset_platform_value, dict):
+        gateway_updates["reset_by_platform"] = reset_platform_value
+        sources.append(reset_platform_src)
+
+    gateway_written = update_json_file(hermes_home / "gateway.json", gateway_updates)
+    return env_updates, sources, configured_platforms, gateway_written, priority_channels["error"]
+
+
+def apply_bootstrap_manifest(hermes_home):
+    payload = read_priority_json("manifest")
+    record = {
+        "source_env": payload["source_env"],
+        "raw_sha256": payload["raw_sha256"],
+        "error": payload["error"],
+        "parsed": payload["parsed"],
+        "updated_at": utc_now(),
+    }
+    if payload["source_env"] or payload["error"]:
+        persist_bootstrap_payload(hermes_home, "manifest", record)
+    return record
+
+
+def write_applied_state(hermes_home, state):
+    state["updated_at"] = utc_now()
+    write_json_secure(bootstrap_dir(hermes_home) / "applied-state.json", state)
+
+
+def normalize_provider(provider, base_url):
+    provider = (provider or "").strip().lower()
+    aliases = {
+        "openai-compatible": "custom",
+        "openai_compatible": "custom",
+        "openai-compatible-api": "custom",
+        "openai": "custom",
+        "google": "gemini",
+        "google-ai": "gemini",
+    }
+    provider = aliases.get(provider, provider)
+    if provider:
+        return provider
+
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if host.endswith("openrouter.ai"):
+        return "openrouter"
+    if host.endswith("anthropic.com"):
+        return "anthropic"
+    if "generativelanguage.googleapis.com" in host:
+        return "gemini"
+    if base_url:
+        return "custom"
+    return "auto"
+
+
+def read_env_file(path):
+    values = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def quote_env(value):
+    if value == "":
+        return ""
+    if any(ch.isspace() or ch in value for ch in "\"'#$`\\"):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return value
+
+
+def update_env_file(path, updates):
+    existing = read_env_file(path)
+    existing.update({k: v for k, v in updates.items() if v})
+    rendered = []
+    if path.exists():
+        seen = set()
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                rendered.append(line)
+                continue
+            key = stripped.split("=", 1)[0].strip()
+            if key in existing:
+                rendered.append(f"{key}={quote_env(existing[key])}")
+                seen.add(key)
+            else:
+                rendered.append(line)
+        for key in sorted(set(existing) - seen):
+            rendered.append(f"{key}={quote_env(existing[key])}")
+    else:
+        rendered = [f"{key}={quote_env(value)}" for key, value in sorted(existing.items())]
+    path.write_text("\n".join(rendered).rstrip() + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+hermes_home = Path(os.environ.get("HERMES_HOME", "/config/.hermes"))
+config_path = hermes_home / "config.yaml"
+env_path = hermes_home / ".env"
+
+model_src, model_value = first_env(
+    "CLAWMANAGER_LLM_MODELS",
+    "CLAWMANAGER_LLM_MODEL",
+    "CLAWMANAGER_MODELS",
+    "CLAWMANAGER_MODEL",
+    "HERMES_MODELS",
+    "HERMES_MODEL",
+    "OPENAI_MODEL",
+    "LLM_MODELS",
+    "LLM_MODEL",
+    "MODEL_NAME",
+)
+default_model_src, default_model_value = first_env(
+    "CLAWMANAGER_LLM_DEFAULT_MODEL",
+    "CLAWMANAGER_DEFAULT_MODEL",
+    "HERMES_DEFAULT_MODEL",
+    "DEFAULT_MODEL",
+)
+provider_src, provider = first_env(
+    "CLAWMANAGER_LLM_PROVIDER",
+    "CLAWMANAGER_AI_PROVIDER",
+    "HERMES_MODEL_PROVIDER",
+    "HERMES_INFERENCE_PROVIDER",
+    "LLM_PROVIDER",
+    "MODEL_PROVIDER",
+)
+base_src, base_url = first_env(
+    "CLAWMANAGER_LLM_BASE_URL",
+    "CLAWMANAGER_LLM_API_BASE_URL",
+    "CLAWMANAGER_LLM_OPENAI_BASE_URL",
+    "CLAWMANAGER_OPENAI_BASE_URL",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "LLM_BASE_URL",
+    "API_BASE_URL",
+)
+key_src, api_key = first_env(
+    "CLAWMANAGER_LLM_API_KEY",
+    "CLAWMANAGER_LLM_TOKEN",
+    "CLAWMANAGER_LLM_OPENAI_API_KEY",
+    "CLAWMANAGER_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+    "LLM_API_KEY",
+    "API_KEY",
+)
+mode_src, api_mode = first_env(
+    "CLAWMANAGER_LLM_API_MODE",
+    "HERMES_MODEL_API_MODE",
+    "HERMES_API_MODE",
+)
+
+has_llm_config = any([model_value, default_model_value, provider, base_url, api_key, api_mode])
+
+models = parse_models(model_value) if model_value else []
+default_models = parse_models(default_model_value) if default_model_value else []
+default_model = default_models[0] if default_models else (models[0] if models else "")
+provider = normalize_provider(provider, base_url) if has_llm_config else ""
+base_url = base_url.rstrip("/") if base_url else ""
+
+if config_path.exists():
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+else:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+
+provider_key = ""
+model_cfg = data.get("model")
+if isinstance(model_cfg, str):
+    model_cfg = {"default": model_cfg}
+elif not isinstance(model_cfg, dict):
+    model_cfg = {}
+
+if has_llm_config:
+    if provider == "custom" and base_url:
+        provider_key = os.environ.get("CLAWMANAGER_LLM_PROVIDER_ID", "").strip()
+        provider_key = provider_key or os.environ.get("HERMES_CUSTOM_PROVIDER_ID", "").strip()
+        provider_key = provider_key or "clawmanager"
+
+    if default_model:
+        model_cfg["default"] = default_model
+    if provider_key:
+        model_cfg["provider"] = provider_key
+        model_cfg.pop("base_url", None)
+        model_cfg.pop("api_key", None)
+    elif provider:
+        model_cfg["provider"] = provider
+        if base_url:
+            model_cfg["base_url"] = base_url
+    if api_mode:
+        model_cfg["api_mode"] = api_mode
+
+    if provider_key:
+        providers_cfg = data.get("providers")
+        if not isinstance(providers_cfg, dict):
+            providers_cfg = {}
+        provider_entry = providers_cfg.get(provider_key)
+        if not isinstance(provider_entry, dict):
+            provider_entry = {}
+
+        provider_name = (
+            os.environ.get("CLAWMANAGER_LLM_PROVIDER_NAME", "").strip()
+            or provider_entry.get("name")
+            or "ClawManager"
+        )
+        provider_entry["name"] = provider_name
+        provider_entry["base_url"] = base_url
+        provider_entry["default_model"] = default_model
+        provider_entry["transport"] = "openai_chat"
+        if api_mode:
+            provider_entry["api_mode"] = api_mode
+        elif provider_entry.get("api_mode") not in {
+            "chat_completions",
+            "codex_responses",
+            "anthropic_messages",
+            "bedrock_converse",
+        }:
+            provider_entry["api_mode"] = "chat_completions"
+        if api_key:
+            provider_entry["key_env"] = "OPENAI_API_KEY"
+
+        provider_models = provider_entry.get("models")
+        if not isinstance(provider_models, dict):
+            provider_models = {}
+        for model_name in models:
+            existing = provider_models.get(model_name)
+            provider_models[model_name] = existing if isinstance(existing, dict) else {}
+        provider_entry["models"] = provider_models
+
+        providers_cfg[provider_key] = provider_entry
+        data["providers"] = providers_cfg
+
+    data["model"] = model_cfg
+
+skill_sources = apply_skill_config(data, hermes_home)
+messaging_env_updates, messaging_sources, configured_platforms, gateway_written, channel_error = apply_messaging_config(
+    data,
+    hermes_home,
+)
+manifest_record = apply_bootstrap_manifest(hermes_home)
+write_applied_state(
+    hermes_home,
+    {
+        "model": {
+            "configured": has_llm_config,
+            "models": models,
+            "default_model": model_cfg.get("default", ""),
+            "provider": model_cfg.get("provider", ""),
+            "base_url_sha256": hashlib.sha256(base_url.encode("utf-8")).hexdigest() if base_url else "",
+        },
+        "skills": {
+            "sources": skill_sources,
+            "external_dirs": data.get("skills", {}).get("external_dirs", []),
+        },
+        "channels": {
+            "sources": messaging_sources,
+            "configured_platforms": configured_platforms,
+            "gateway_json": gateway_written,
+            "error": channel_error,
+        },
+        "manifest": {
+            "source_env": manifest_record.get("source_env", ""),
+            "raw_sha256": manifest_record.get("raw_sha256", ""),
+            "error": manifest_record.get("error", ""),
+        },
+    },
+)
+
+tmp = config_path.with_suffix(".yaml.tmp")
+tmp.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+tmp.replace(config_path)
+
+env_updates = dict(messaging_env_updates)
+if api_key:
+    env_updates["OPENAI_API_KEY"] = api_key
+    if provider == "openrouter" or "openrouter.ai" in base_url:
+        env_updates["OPENROUTER_API_KEY"] = api_key
+    elif provider == "anthropic":
+        env_updates["ANTHROPIC_API_KEY"] = api_key
+    elif provider == "gemini":
+        env_updates["GOOGLE_API_KEY"] = api_key
+        env_updates["GEMINI_API_KEY"] = api_key
+if base_url:
+    env_updates["OPENAI_BASE_URL"] = base_url
+    if provider == "custom":
+        env_updates["CUSTOM_BASE_URL"] = base_url
+    elif provider == "openrouter":
+        env_updates["OPENROUTER_BASE_URL"] = base_url
+
+if env_updates:
+    update_env_file(env_path, env_updates)
+
+source_parts = [
+    f"model:{model_src}" if model_src else "",
+    f"default_model:{default_model_src}" if default_model_src else "",
+    f"provider:{provider_src or 'inferred'}" if provider else "",
+    f"base_url:{base_src}" if base_src else "",
+    f"api_key:{key_src}" if key_src else "",
+    f"api_mode:{mode_src}" if mode_src else "",
+    f"skills:{','.join(skill_sources)}" if skill_sources else "",
+    f"messaging:{','.join(messaging_sources)}" if messaging_sources else "",
+]
+sources = ", ".join(part for part in source_parts if part)
+if not sources:
+    sources = "defaults"
+
+print(
+    f"[hermes-config] applied runtime config "
+    f"default_model={model_cfg.get('default', '')!r} models={models!r} "
+    f"provider={model_cfg.get('provider', '')!r} "
+    f"base_url={(base_url or model_cfg.get('base_url', ''))!r} "
+    f"skill_dirs={data.get('skills', {}).get('external_dirs', [])!r} "
+    f"platforms={configured_platforms!r} gateway_json={gateway_written} "
+    f"sources={sources}"
+)
+PY
