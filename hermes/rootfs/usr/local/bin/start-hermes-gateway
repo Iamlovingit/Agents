@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export HOME="${HOME:-/config}"
+export HERMES_HOME="${HERMES_HOME:-/config/.hermes}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/config/.cache}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/config/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-/config/.local/share}"
+export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/config/.cache/npm}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/config/.cache/uv}"
+
+mkdir -p \
+    "${HERMES_HOME}" \
+    "${XDG_CACHE_HOME}/npm" \
+    "${XDG_CACHE_HOME}/uv" \
+    "${XDG_CONFIG_HOME}" \
+    "${XDG_DATA_HOME}"
+
+/usr/local/bin/hermes-apply-runtime-config || true
+
+env_file="${HERMES_HOME}/.env"
+if [ -f "${env_file}" ]; then
+    while IFS= read -r line || [ -n "${line:-}" ]; do
+        line="${line%$'\r'}"
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+            value="${value:1:${#value}-2}"
+            value="${value//\\\"/\"}"
+            value="${value//\\\\/\\}"
+        elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        export "${key}=${value}"
+    done <"${env_file}"
+fi
+
+gateway_mode="$(printf '%s' "${HERMES_GATEWAY_ENABLED:-auto}" | tr '[:upper:]' '[:lower:]')"
+
+has_runtime_channel_env() {
+    [ -n "${CLAWMANAGER_HERMES_CHANNELS_JSON:-}" ] ||
+        [ -n "${CLAWMANAGER_RUNTIME_CHANNELS_JSON:-}" ] ||
+        [ -n "${CLAWMANAGER_OPENCLAW_CHANNELS_JSON:-}" ] ||
+        [ -n "${CLAWMANAGER_CHANNELS:-}" ] ||
+        [ -n "${CLAWMANAGER_MESSAGING_CHANNELS:-}" ] ||
+        [ -n "${CLAWMANAGER_MESSAGE_CHANNELS:-}" ] ||
+        [ -n "${CLAWMANAGER_CHANNEL_CONFIG:-}" ] ||
+        [ -n "${HERMES_CHANNELS:-}" ] ||
+        [ -n "${HERMES_MESSAGING_CHANNELS:-}" ]
+}
+
+has_gateway_env_file() {
+    [ -f "${env_file}" ] && grep -Eq '^(TELEGRAM_BOT_TOKEN|DISCORD_BOT_TOKEN|SLACK_BOT_TOKEN|WHATSAPP_ENABLED|SIGNAL_HTTP_URL|SIGNAL_ACCOUNT|MATTERMOST_TOKEN|MATRIX_ACCESS_TOKEN|MATRIX_PASSWORD|DINGTALK_CLIENT_ID|FEISHU_APP_ID|WECOM_BOT_ID|WECOM_CALLBACK_CORP_ID|WEIXIN_TOKEN|QQBOT_APP_ID|BLUEBUBBLES_SERVER_URL|YUANBAO_APP_ID|API_SERVER_ENABLED|WEBHOOK_ENABLED)=' "${env_file}"
+}
+
+should_start_gateway=false
+case "${gateway_mode}" in
+    1|true|yes|y|on|enabled)
+        should_start_gateway=true
+        ;;
+    0|false|no|n|off|disabled)
+        should_start_gateway=false
+        ;;
+    *)
+        if has_runtime_channel_env || has_gateway_env_file; then
+            should_start_gateway=true
+        fi
+        ;;
+esac
+
+if [ "${should_start_gateway}" != "true" ]; then
+    echo "Hermes gateway disabled; no channel configuration detected"
+    exec sleep infinity
+fi
+
+if [ "$(id -u)" = "0" ]; then
+    if id abc >/dev/null 2>&1; then
+        chown -R abc:abc "${HERMES_HOME}" "${XDG_CACHE_HOME}" "${XDG_CONFIG_HOME}" "${XDG_DATA_HOME}" || true
+    fi
+    if command -v s6-setuidgid >/dev/null 2>&1 && id abc >/dev/null 2>&1; then
+        exec s6-setuidgid abc /bin/bash -lc 'cd /config && exec hermes gateway'
+    fi
+fi
+
+cd /config
+exec hermes gateway
