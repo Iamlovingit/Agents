@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/iamlovingit/clawmanager-openclaw-image/internal/bootstrap"
+	"github.com/iamlovingit/clawmanager-openclaw-image/internal/browser"
 	appconfig "github.com/iamlovingit/clawmanager-openclaw-image/internal/config"
 	"github.com/iamlovingit/clawmanager-openclaw-image/internal/supervisor"
 )
@@ -28,6 +29,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	go browser.Launch(ctx, cfg)
 
 	if err := s.Run(ctx); err != nil {
 		log.Fatalf("run supervisor: %v", err)

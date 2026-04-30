@@ -79,7 +79,12 @@ Set these in ClawManager or `docker run` to inject into `openclaw.json`:
 | `OPENCLAW_AGENT_BOOTSTRAP_TOKEN` | agent bootstrap                      | Required. Bootstrap token for agent registration |
 | `OPENCLAW_AGENT_CONTROL_PLANE_BASE_URL` | agent bootstrap             | Required. ClawManager base URL |
 | `OPENCLAW_AGENT_INITIAL_CONFIG_REVISION_ID` | agent bootstrap      | Optional initial revision id |
-| `OPENCLAW_AGENT_OPENCLAW_COMMAND` | process management              | Optional. Defaults to `openclaw gateway` |
+| `OPENCLAW_AGENT_OPENCLAW_COMMAND` | process management              | Optional. Defaults to `openclaw gateway run` |
+| `OPENCLAW_AGENT_OPENCLAW_DOCTOR_COMMAND` | startup repair          | Optional. Defaults to `openclaw doctor --fix` |
+| `OPENCLAW_AGENT_OPENCLAW_DOCTOR_POLICY` | startup repair          | Optional. `auto` (default), `always`, or `never`; `auto` does not run doctor before the first launch, and only repairs when the gateway fails to start, exits during startup, or health does not come up |
+| `OPENCLAW_AGENT_OPENCLAW_STARTUP_HEALTH_TIMEOUT` | process management | Optional. Defaults to `90s`; wait time before auto doctor when gateway health is not ready |
+| `OPENCLAW_AGENT_STARTUP_NOTIFICATION_MESSAGE` | desktop notification | Optional. Defaults to `正在启动龙虾` |
+| `OPENCLAW_AGENT_STARTUP_REPAIR_NOTIFICATION_MESSAGE` | desktop notification | Optional. Defaults to `正在修复启动环境，可能需要 1-2 分钟` |
 
 The agent default config is stored at `/etc/openclaw-agent/config.yaml`, seeded from `/defaults/openclaw-agent/config.yaml`, and the local health/debug server listens on `:18080` by default.
 

@@ -98,23 +98,28 @@ func rewriteInstalledPluginPaths(cfg map[string]any, prefix, userExtensionsDir s
 	if !ok {
 		return
 	}
-	installs, ok := plugins["installs"].(map[string]any)
-	if !ok {
-		return
-	}
-	for _, entry := range installs {
-		install, ok := entry.(map[string]any)
-		if !ok {
-			continue
+	rewritePluginPathStrings(plugins, prefix, userExtensionsDir)
+}
+
+func rewritePluginPathStrings(value any, prefix, userExtensionsDir string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			typed[key] = rewritePluginPathStrings(child, prefix, userExtensionsDir)
 		}
-		installPath, ok := install["installPath"].(string)
-		if !ok {
-			continue
+		return typed
+	case []any:
+		for i, child := range typed {
+			typed[i] = rewritePluginPathStrings(child, prefix, userExtensionsDir)
 		}
-		if !strings.HasPrefix(installPath, prefix) {
-			continue
+		return typed
+	case string:
+		if strings.HasPrefix(typed, prefix) {
+			return path.Join(userExtensionsDir, typed[len(prefix):])
 		}
-		install["installPath"] = path.Join(userExtensionsDir, installPath[len(prefix):])
+		return typed
+	default:
+		return typed
 	}
 }
 

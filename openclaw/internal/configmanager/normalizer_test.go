@@ -180,7 +180,13 @@ func TestPluginInstallPathRewritten(t *testing.T) {
 		"plugins": {
 			"installs": {
 				"foo": {
-					"installPath": "/defaults/.openclaw/extensions/foo"
+					"installPath": "/defaults/.openclaw/extensions/foo",
+					"manifestPath": "/defaults/.openclaw/extensions/foo/openclaw.plugin.json",
+					"metadata": {
+						"manifestCandidates": [
+							"/defaults/.openclaw/extensions/foo/openclaw.plugin.json"
+						]
+					}
 				},
 				"bar": {
 					"installPath": "/opt/vendor/bar"
@@ -215,8 +221,88 @@ func TestPluginInstallPathRewritten(t *testing.T) {
 	if got, _ := foo["installPath"].(string); got != wantFoo {
 		t.Fatalf("expected foo installPath to be rewritten to %q, got %q", wantFoo, got)
 	}
+	wantManifest := path.Join(userDir, "foo", "openclaw.plugin.json")
+	if got, _ := foo["manifestPath"].(string); got != wantManifest {
+		t.Fatalf("expected foo manifestPath to be rewritten to %q, got %q", wantManifest, got)
+	}
+	metadata := nestedMapForTest(t, foo, "metadata")
+	candidates, _ := metadata["manifestCandidates"].([]any)
+	if len(candidates) != 1 || candidates[0] != wantManifest {
+		t.Fatalf("expected nested manifest candidates to be rewritten to %q, got %#v", wantManifest, candidates)
+	}
 	if got, _ := bar["installPath"].(string); got != "/opt/vendor/bar" {
 		t.Fatalf("expected bar installPath to be untouched, got %q", got)
+	}
+}
+
+func TestNormalizeActiveConfigRewritesPluginInstallRegistry(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	registryPath := filepath.Join(root, "plugins", "installs.json")
+	userDir := "/config/.openclaw/extensions"
+
+	config := `{
+    "channels": {},
+    "plugins": {
+        "entries": {}
+    }
+}
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := `{
+    "installRecords": {
+        "dingtalk-connector": {
+            "installPath": "/defaults/.openclaw/extensions/dingtalk-connector"
+        }
+    },
+    "plugins": [
+        {
+            "pluginId": "dingtalk-connector",
+            "manifestPath": "/defaults/.openclaw/extensions/dingtalk-connector/openclaw.plugin.json",
+            "source": "/defaults/.openclaw/extensions/dingtalk-connector/dist/index.mjs",
+            "rootDir": "/defaults/.openclaw/extensions/dingtalk-connector"
+        }
+    ]
+}
+`
+	if err := os.WriteFile(registryPath, []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: t.TempDir(),
+		OpenClawExtensionsDir:        userDir,
+		InstalledPluginPathPrefix:    "/defaults/.openclaw/extensions/",
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readConfigForTest(t, registryPath)
+	record := nestedMapForTest(t, got, "installRecords", "dingtalk-connector")
+	if gotPath, _ := record["installPath"].(string); gotPath != path.Join(userDir, "dingtalk-connector") {
+		t.Fatalf("expected install registry path to be rewritten, got %q", gotPath)
+	}
+	plugins, _ := got["plugins"].([]any)
+	if len(plugins) != 1 {
+		t.Fatalf("expected one plugin entry, got %#v", plugins)
+	}
+	plugin, _ := plugins[0].(map[string]any)
+	wantRoot := path.Join(userDir, "dingtalk-connector")
+	if gotPath, _ := plugin["rootDir"].(string); gotPath != wantRoot {
+		t.Fatalf("expected rootDir to be rewritten to %q, got %q", wantRoot, gotPath)
+	}
+	if gotPath, _ := plugin["manifestPath"].(string); gotPath != path.Join(wantRoot, "openclaw.plugin.json") {
+		t.Fatalf("expected manifestPath to be rewritten, got %q", gotPath)
+	}
+	if gotPath, _ := plugin["source"].(string); gotPath != path.Join(wantRoot, "dist", "index.mjs") {
+		t.Fatalf("expected source to be rewritten, got %q", gotPath)
 	}
 }
 

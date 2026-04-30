@@ -42,7 +42,7 @@
                 "cacheRead": 0,
                 "cacheWrite": 0
               },
-              "contextWindow": 128000,
+              "contextWindow": 200000,
               "maxTokens": 65536
             }
           ]
@@ -79,9 +79,6 @@
       "restart": true,
       "ownerDisplay": "raw"
     },
-    "session": {
-      "dmScope": "per-channel-peer"
-    },
     "channels": {},
     "gateway": {
       "port": 18789,
@@ -111,6 +108,31 @@
           "reminders.add",
           "sms.send"
         ]
+      }
+    },
+    "plugins": {
+      "entries": {
+        "bonjour": {
+          "enabled": false
+        },
+        "acpx": {
+          "enabled": false
+        },
+        "browser": {
+          "enabled": false
+        },
+        "phone-control": {
+          "enabled": false
+        },
+        "talk-voice": {
+          "enabled": false
+        },
+        "device-pair": {
+          "enabled": false
+        },
+        "dingtalk-connector": {
+          "enabled": false
+        }
       }
     }
   }

@@ -17,8 +17,6 @@ type Server struct {
 	srv *http.Server
 }
 
-const openClawWaitWarmupTimeout = 30 * time.Second
-
 func New(bind string, proc *process.Manager, prof *profiler.Profiler, inspector *openclawinspector.Inspector, st *store.Store) *Server {
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -60,15 +58,13 @@ func New(bind string, proc *process.Manager, prof *profiler.Profiler, inspector 
 
 	router.GET("/openclaw-wait/ready", func(c *gin.Context) {
 		snapshot := proc.Snapshot()
-		ready := openClawWaitReady(snapshot)
+		ready := snapshot.Status == process.StatusRunning
 		c.JSON(http.StatusOK, gin.H{
-			"ready":                  ready,
-			"status":                 snapshot.Status,
-			"gateway_warmup_started": snapshot.GatewayWarmupStarted,
-			"gateway_warmup_ready":   snapshot.GatewayWarmupReady,
-			"openclaw_pid":           snapshot.PID,
-			"operation":              snapshot.LastOperation,
-			"operation_log":          snapshot.LastOperationResult,
+			"ready":         ready,
+			"status":        snapshot.Status,
+			"openclaw_pid":  snapshot.PID,
+			"operation":     snapshot.LastOperation,
+			"operation_log": snapshot.LastOperationResult,
 		})
 	})
 
@@ -96,10 +92,6 @@ func New(bind string, proc *process.Manager, prof *profiler.Profiler, inspector 
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
-}
-
-func openClawWaitReady(snapshot process.Snapshot) bool {
-	return snapshot.Status == process.StatusRunning || snapshot.GatewayWarmupStarted || snapshot.GatewayWarmupReady
 }
 
 func openClawWaitPage(target string) string {
@@ -138,37 +130,24 @@ func openClawWaitPage(target string) string {
 </head>
 <body>
   <main>
-    <h1>&#27491;&#22312;&#21551;&#21160;&#40857;&#34430;</h1>
-    <p id="status">&#21518;&#21488;&#26381;&#21153;&#20934;&#22791;&#20013;&#65292;&#35831;&#31245;&#20505;&#12290;</p>
+    <h1>正在启动龙虾</h1>
+    <p id="status">后台服务准备中，请稍候。</p>
     <div class="bar"></div>
   </main>
   <script>
     const target = ` + strconv.Quote(target) + `;
-    const warmupWaitMs = ` + strconv.FormatInt(openClawWaitWarmupTimeout.Milliseconds(), 10) + `;
-    let gatewayReadyAt = 0;
     async function check() {
       try {
         const resp = await fetch("/openclaw-wait/ready", { cache: "no-store" });
         const data = await resp.json();
         if (data.ready) {
-          if (gatewayReadyAt === 0) {
-            gatewayReadyAt = Date.now();
-          }
-          const warmupStarted = data.gateway_warmup_started === true;
-          const warmupReady = data.gateway_warmup_ready === true;
-          const warmupTimedOut = (warmupStarted || warmupReady) && Date.now() - gatewayReadyAt >= warmupWaitMs;
-          if (warmupReady || warmupTimedOut) {
-            location.replace(target);
-            return;
-          }
-          document.getElementById("status").textContent = "\u6b63\u5728\u9884\u70ed\u6a21\u578b\u76ee\u5f55\uff0c\u9a6c\u4e0a\u8fdb\u5165\u3002";
-          setTimeout(check, 1000);
+          location.replace(target);
           return;
         }
         const status = data.status || "starting";
-        document.getElementById("status").textContent = "\u5f53\u524d\u72b6\u6001\uff1a" + status;
+        document.getElementById("status").textContent = "当前状态：" + status;
       } catch (_) {
-        document.getElementById("status").textContent = "\u6b63\u5728\u8fde\u63a5\u672c\u5730\u542f\u52a8\u670d\u52a1\u3002";
+        document.getElementById("status").textContent = "正在连接本地启动服务。";
       }
       setTimeout(check, 1200);
     }
