@@ -26,6 +26,10 @@ func Run(cfg appconfig.Config) error {
 	if err := applyOwnership(cfg); err != nil {
 		return fmt.Errorf("apply ownership: %w", err)
 	}
+	if err := ensureDingtalkOpenclawSymlink(cfg); err != nil {
+		return fmt.Errorf("dingtalk openclaw symlink: %w", err)
+	}
+	raiseOpenFileLimit()
 	if err := dropPrivileges(cfg); err != nil {
 		return fmt.Errorf("drop privileges: %w", err)
 	}

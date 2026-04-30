@@ -17,77 +17,102 @@ const (
 )
 
 type Config struct {
-	InstanceID                   string        `yaml:"instance_id"`
-	BootstrapToken               string        `yaml:"bootstrap_token"`
-	ControlPlaneBaseURL          string        `yaml:"control_plane_base_url"`
-	AgentDataDir                 string        `yaml:"agent_data_dir"`
-	DiskUsagePath                string        `yaml:"disk_usage_path"`
-	DiskLimitBytes               uint64        `yaml:"disk_limit_bytes"`
-	InitialConfigRevisionID      string        `yaml:"initial_config_revision_id"`
-	ProtocolVersion              string        `yaml:"protocol_version"`
-	LocalHTTPBind                string        `yaml:"local_http_bind"`
-	LogFilePath                  string        `yaml:"log_file_path"`
-	OpenClawCommand              []string      `yaml:"openclaw_command"`
-	OpenClawConfigPath           string        `yaml:"openclaw_config_path"`
-	OpenClawWorkspacePath        string        `yaml:"openclaw_workspace_path"`
-	OpenClawSkillsPath           string        `yaml:"openclaw_skills_path"`
-	OpenClawBuiltinSkillsPath    string        `yaml:"openclaw_builtin_skills_path"`
-	OpenClawHealthURL            string        `yaml:"openclaw_health_url"`
-	OpenClawDefaultsDir          string        `yaml:"openclaw_defaults_dir"`
-	AutostartDefaultsDir         string        `yaml:"autostart_defaults_dir"`
-	AutostartTargetDir           string        `yaml:"autostart_target_dir"`
-	OpenClawExtensionsDir        string        `yaml:"openclaw_extensions_dir"`
-	OpenClawBundledExtensionsDir string        `yaml:"openclaw_bundled_extensions_dir"`
-	InstalledPluginPathPrefix    string        `yaml:"installed_plugin_path_prefix"`
-	DropUserName                 string        `yaml:"drop_user_name"`
-	HeartbeatInterval            time.Duration `yaml:"-"`
-	StateReportInterval          time.Duration `yaml:"-"`
-	CommandPollInterval          time.Duration `yaml:"-"`
-	CommandPollBackoffMax        time.Duration `yaml:"-"`
-	RegisterRetryInterval        time.Duration `yaml:"-"`
-	ProcessStopTimeout           time.Duration `yaml:"-"`
-	SkillIncrementalInterval     time.Duration `yaml:"-"`
-	SkillFullSyncInterval        time.Duration `yaml:"-"`
-	MaxAutoRestart               int           `yaml:"max_auto_restart"`
-	HeartbeatIntervalRaw         string        `yaml:"heartbeat_interval"`
-	StateReportIntervalRaw       string        `yaml:"state_report_interval"`
-	CommandPollIntervalRaw       string        `yaml:"command_poll_interval"`
-	CommandPollBackoffMaxRaw     string        `yaml:"command_poll_backoff_max"`
-	RegisterRetryIntervalRaw     string        `yaml:"register_retry_interval"`
-	ProcessStopTimeoutRaw        string        `yaml:"process_stop_timeout"`
-	SkillIncrementalRaw          string        `yaml:"skill_incremental_interval"`
-	SkillFullSyncRaw             string        `yaml:"skill_full_sync_interval"`
+	InstanceID                       string        `yaml:"instance_id"`
+	BootstrapToken                   string        `yaml:"bootstrap_token"`
+	ControlPlaneBaseURL              string        `yaml:"control_plane_base_url"`
+	AgentDataDir                     string        `yaml:"agent_data_dir"`
+	DiskUsagePath                    string        `yaml:"disk_usage_path"`
+	DiskLimitBytes                   uint64        `yaml:"disk_limit_bytes"`
+	InitialConfigRevisionID          string        `yaml:"initial_config_revision_id"`
+	ProtocolVersion                  string        `yaml:"protocol_version"`
+	LocalHTTPBind                    string        `yaml:"local_http_bind"`
+	LogFilePath                      string        `yaml:"log_file_path"`
+	OpenClawCommand                  []string      `yaml:"openclaw_command"`
+	OpenClawDoctorCommand            []string      `yaml:"openclaw_doctor_command"`
+	OpenClawDoctorPolicy             string        `yaml:"openclaw_doctor_policy"`
+	StartupNotificationMessage       string        `yaml:"startup_notification_message"`
+	StartupRepairNotificationMessage string        `yaml:"startup_repair_notification_message"`
+	OpenClawConfigPath               string        `yaml:"openclaw_config_path"`
+	OpenClawWorkspacePath            string        `yaml:"openclaw_workspace_path"`
+	OpenClawSkillsPath               string        `yaml:"openclaw_skills_path"`
+	OpenClawBuiltinSkillsPath        string        `yaml:"openclaw_builtin_skills_path"`
+	OpenClawHealthURL                string        `yaml:"openclaw_health_url"`
+	OpenClawStartupHealthTimeoutRaw  string        `yaml:"openclaw_startup_health_timeout"`
+	OpenClawDefaultsDir              string        `yaml:"openclaw_defaults_dir"`
+	AutostartDefaultsDir             string        `yaml:"autostart_defaults_dir"`
+	AutostartTargetDir               string        `yaml:"autostart_target_dir"`
+	OpenClawExtensionsDir            string        `yaml:"openclaw_extensions_dir"`
+	OpenClawBundledExtensionsDir     string        `yaml:"openclaw_bundled_extensions_dir"`
+	InstalledPluginPathPrefix        string        `yaml:"installed_plugin_path_prefix"`
+	DropUserName                     string        `yaml:"drop_user_name"`
+	BrowserAutoLaunchEnabled         bool          `yaml:"browser_auto_launch_enabled"`
+	BrowserExecutable                string        `yaml:"browser_executable"`
+	BrowserURL                       string        `yaml:"browser_url"`
+	WaylandSocketPath                string        `yaml:"wayland_socket_path"`
+	BrowserLaunchWaylandTimeoutRaw   string        `yaml:"browser_launch_wayland_timeout"`
+	BrowserLaunchExtraDelayRaw       string        `yaml:"browser_launch_extra_delay"`
+	BrowserLaunchWaylandTimeout      time.Duration `yaml:"-"`
+	BrowserLaunchExtraDelay          time.Duration `yaml:"-"`
+	OpenClawStartupHealthTimeout     time.Duration `yaml:"-"`
+	HeartbeatInterval                time.Duration `yaml:"-"`
+	StateReportInterval              time.Duration `yaml:"-"`
+	CommandPollInterval              time.Duration `yaml:"-"`
+	CommandPollBackoffMax            time.Duration `yaml:"-"`
+	RegisterRetryInterval            time.Duration `yaml:"-"`
+	ProcessStopTimeout               time.Duration `yaml:"-"`
+	SkillIncrementalInterval         time.Duration `yaml:"-"`
+	SkillFullSyncInterval            time.Duration `yaml:"-"`
+	MaxAutoRestart                   int           `yaml:"max_auto_restart"`
+	HeartbeatIntervalRaw             string        `yaml:"heartbeat_interval"`
+	StateReportIntervalRaw           string        `yaml:"state_report_interval"`
+	CommandPollIntervalRaw           string        `yaml:"command_poll_interval"`
+	CommandPollBackoffMaxRaw         string        `yaml:"command_poll_backoff_max"`
+	RegisterRetryIntervalRaw         string        `yaml:"register_retry_interval"`
+	ProcessStopTimeoutRaw            string        `yaml:"process_stop_timeout"`
+	SkillIncrementalRaw              string        `yaml:"skill_incremental_interval"`
+	SkillFullSyncRaw                 string        `yaml:"skill_full_sync_interval"`
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		AgentDataDir:                 "/var/lib/openclaw-agent",
-		DiskUsagePath:                "/config",
-		ProtocolVersion:              "v1",
-		LocalHTTPBind:                "0.0.0.0:18080",
-		LogFilePath:                  "/var/log/openclaw-agent/agent.log",
-		OpenClawCommand:              []string{"openclaw", "gateway", "run"},
-		OpenClawConfigPath:           "/config/.openclaw/openclaw.json",
-		OpenClawWorkspacePath:        "/config/.openclaw/workspace",
-		OpenClawSkillsPath:           "/config/.openclaw/workspace/skills",
-		OpenClawBuiltinSkillsPath:    "/usr/lib/node_modules/openclaw/skills",
-		OpenClawHealthURL:            "http://127.0.0.1:18789/health",
-		OpenClawDefaultsDir:          "/defaults/.openclaw",
-		AutostartDefaultsDir:         "/defaults/.config/autostart",
-		AutostartTargetDir:           "/config/.config/autostart",
-		OpenClawExtensionsDir:        "/config/.openclaw/extensions",
-		OpenClawBundledExtensionsDir: "/usr/local/lib/node_modules/openclaw/dist/extensions",
-		InstalledPluginPathPrefix:    "/defaults/.openclaw/extensions/",
-		DropUserName:                 "abc",
-		HeartbeatIntervalRaw:         "15s",
-		StateReportIntervalRaw:       "45s",
-		CommandPollIntervalRaw:       "5s",
-		CommandPollBackoffMaxRaw:     "60s",
-		RegisterRetryIntervalRaw:     "10s",
-		ProcessStopTimeoutRaw:        "20s",
-		SkillIncrementalRaw:          "30s",
-		SkillFullSyncRaw:             "12h",
-		MaxAutoRestart:               3,
+		AgentDataDir:                     "/var/lib/openclaw-agent",
+		DiskUsagePath:                    "/config",
+		ProtocolVersion:                  "v1",
+		LocalHTTPBind:                    "0.0.0.0:18080",
+		LogFilePath:                      "/var/log/openclaw-agent/agent.log",
+		OpenClawCommand:                  []string{"openclaw", "gateway", "run"},
+		OpenClawDoctorCommand:            []string{"openclaw", "doctor", "--fix"},
+		OpenClawDoctorPolicy:             "auto",
+		StartupNotificationMessage:       "正在启动龙虾",
+		StartupRepairNotificationMessage: "正在修复启动环境，可能需要 1-2 分钟",
+		OpenClawConfigPath:               "/config/.openclaw/openclaw.json",
+		OpenClawWorkspacePath:            "/config/.openclaw/workspace",
+		OpenClawSkillsPath:               "/config/.openclaw/workspace/skills",
+		OpenClawBuiltinSkillsPath:        "/usr/lib/node_modules/openclaw/skills",
+		OpenClawHealthURL:                "http://127.0.0.1:18789/health",
+		OpenClawStartupHealthTimeoutRaw:  "90s",
+		OpenClawDefaultsDir:              "/defaults/.openclaw",
+		AutostartDefaultsDir:             "/defaults/.config/autostart",
+		AutostartTargetDir:               "/config/.config/autostart",
+		OpenClawExtensionsDir:            "/config/.openclaw/extensions",
+		OpenClawBundledExtensionsDir:     "/usr/local/lib/node_modules/openclaw/dist/extensions",
+		InstalledPluginPathPrefix:        "/defaults/.openclaw/extensions/",
+		DropUserName:                     "abc",
+		BrowserAutoLaunchEnabled:         true,
+		BrowserExecutable:                "/usr/bin/chromium",
+		BrowserURL:                       "http://localhost:18789",
+		WaylandSocketPath:                "/config/.XDG/wayland-0",
+		BrowserLaunchWaylandTimeoutRaw:   "60s",
+		BrowserLaunchExtraDelayRaw:       "0s",
+		HeartbeatIntervalRaw:             "15s",
+		StateReportIntervalRaw:           "45s",
+		CommandPollIntervalRaw:           "5s",
+		CommandPollBackoffMaxRaw:         "60s",
+		RegisterRetryIntervalRaw:         "10s",
+		ProcessStopTimeoutRaw:            "20s",
+		SkillIncrementalRaw:              "30s",
+		SkillFullSyncRaw:                 "12h",
+		MaxAutoRestart:                   3,
 	}
 
 	path := envOrDefault("OPENCLAW_AGENT_CONFIG_PATH", defaultConfigPath)
@@ -108,11 +133,14 @@ func Load() (Config, error) {
 	overrideStringAny(&cfg.ProtocolVersion, "OPENCLAW_AGENT_PROTOCOL_VERSION", "CLAWMANAGER_AGENT_PROTOCOL_VERSION")
 	overrideStringAny(&cfg.LocalHTTPBind, "OPENCLAW_AGENT_LOCAL_HTTP_BIND")
 	overrideStringAny(&cfg.LogFilePath, "OPENCLAW_AGENT_LOG_FILE_PATH")
+	overrideStringAny(&cfg.StartupNotificationMessage, "OPENCLAW_AGENT_STARTUP_NOTIFICATION_MESSAGE")
+	overrideStringAny(&cfg.StartupRepairNotificationMessage, "OPENCLAW_AGENT_STARTUP_REPAIR_NOTIFICATION_MESSAGE")
 	overrideStringAny(&cfg.OpenClawConfigPath, "OPENCLAW_AGENT_OPENCLAW_CONFIG_PATH")
 	overrideStringAny(&cfg.OpenClawWorkspacePath, "OPENCLAW_AGENT_OPENCLAW_WORKSPACE_PATH")
 	overrideStringAny(&cfg.OpenClawSkillsPath, "OPENCLAW_AGENT_OPENCLAW_SKILLS_PATH")
 	overrideStringAny(&cfg.OpenClawBuiltinSkillsPath, "OPENCLAW_AGENT_OPENCLAW_BUILTIN_SKILLS_PATH")
 	overrideStringAny(&cfg.OpenClawHealthURL, "OPENCLAW_AGENT_OPENCLAW_HEALTH_URL")
+	overrideStringAny(&cfg.OpenClawStartupHealthTimeoutRaw, "OPENCLAW_AGENT_OPENCLAW_STARTUP_HEALTH_TIMEOUT")
 	overrideStringAny(&cfg.OpenClawDefaultsDir, "OPENCLAW_AGENT_OPENCLAW_DEFAULTS_DIR")
 	overrideStringAny(&cfg.AutostartDefaultsDir, "OPENCLAW_AGENT_AUTOSTART_DEFAULTS_DIR")
 	overrideStringAny(&cfg.AutostartTargetDir, "OPENCLAW_AGENT_AUTOSTART_TARGET_DIR")
@@ -120,6 +148,12 @@ func Load() (Config, error) {
 	overrideStringAny(&cfg.OpenClawBundledExtensionsDir, "OPENCLAW_AGENT_OPENCLAW_BUNDLED_EXTENSIONS_DIR")
 	overrideStringAny(&cfg.InstalledPluginPathPrefix, "OPENCLAW_AGENT_INSTALLED_PLUGIN_PATH_PREFIX")
 	overrideStringAny(&cfg.DropUserName, "OPENCLAW_AGENT_DROP_USER_NAME")
+	overrideBoolAny(&cfg.BrowserAutoLaunchEnabled, "OPENCLAW_AGENT_BROWSER_AUTO_LAUNCH_ENABLED")
+	overrideStringAny(&cfg.BrowserExecutable, "OPENCLAW_AGENT_BROWSER_EXECUTABLE")
+	overrideStringAny(&cfg.BrowserURL, "OPENCLAW_AGENT_BROWSER_URL")
+	overrideStringAny(&cfg.WaylandSocketPath, "OPENCLAW_AGENT_WAYLAND_SOCKET_PATH")
+	overrideStringAny(&cfg.BrowserLaunchWaylandTimeoutRaw, "OPENCLAW_AGENT_BROWSER_LAUNCH_WAYLAND_TIMEOUT")
+	overrideStringAny(&cfg.BrowserLaunchExtraDelayRaw, "OPENCLAW_AGENT_BROWSER_LAUNCH_EXTRA_DELAY")
 	overrideStringAny(&cfg.HeartbeatIntervalRaw, "OPENCLAW_AGENT_HEARTBEAT_INTERVAL")
 	overrideStringAny(&cfg.StateReportIntervalRaw, "OPENCLAW_AGENT_STATE_REPORT_INTERVAL")
 	overrideStringAny(&cfg.CommandPollIntervalRaw, "OPENCLAW_AGENT_COMMAND_POLL_INTERVAL")
@@ -132,6 +166,10 @@ func Load() (Config, error) {
 	if raw := envFirst("OPENCLAW_AGENT_OPENCLAW_COMMAND"); raw != "" {
 		cfg.OpenClawCommand = strings.Fields(raw)
 	}
+	if raw := envFirst("OPENCLAW_AGENT_OPENCLAW_DOCTOR_COMMAND"); raw != "" {
+		cfg.OpenClawDoctorCommand = strings.Fields(raw)
+	}
+	overrideStringAny(&cfg.OpenClawDoctorPolicy, "OPENCLAW_AGENT_OPENCLAW_DOCTOR_POLICY")
 	if raw := envFirst("OPENCLAW_AGENT_MAX_AUTO_RESTART"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil {
@@ -172,6 +210,15 @@ func Load() (Config, error) {
 	if cfg.SkillFullSyncInterval, err = time.ParseDuration(cfg.SkillFullSyncRaw); err != nil {
 		return Config{}, fmt.Errorf("parse skill_full_sync_interval: %w", err)
 	}
+	if cfg.BrowserLaunchWaylandTimeout, err = time.ParseDuration(cfg.BrowserLaunchWaylandTimeoutRaw); err != nil {
+		return Config{}, fmt.Errorf("parse browser_launch_wayland_timeout: %w", err)
+	}
+	if cfg.BrowserLaunchExtraDelay, err = time.ParseDuration(cfg.BrowserLaunchExtraDelayRaw); err != nil {
+		return Config{}, fmt.Errorf("parse browser_launch_extra_delay: %w", err)
+	}
+	if cfg.OpenClawStartupHealthTimeout, err = time.ParseDuration(cfg.OpenClawStartupHealthTimeoutRaw); err != nil {
+		return Config{}, fmt.Errorf("parse openclaw_startup_health_timeout: %w", err)
+	}
 
 	if cfg.InstanceID == "" {
 		return Config{}, errors.New("instance_id is required")
@@ -209,6 +256,19 @@ func overrideString(target *string, envKey string) {
 func overrideStringAny(target *string, envKeys ...string) {
 	if value := envFirst(envKeys...); value != "" {
 		*target = value
+	}
+}
+
+func overrideBoolAny(target *bool, envKeys ...string) {
+	value := envFirst(envKeys...)
+	if value == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		*target = true
+	case "0", "false", "no", "off":
+		*target = false
 	}
 }
 

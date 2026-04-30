@@ -79,7 +79,12 @@ docker run -d \
 | `OPENCLAW_AGENT_BOOTSTRAP_TOKEN` | agent 启动参数                      | 必填。agent 注册使用的 bootstrap token |
 | `OPENCLAW_AGENT_CONTROL_PLANE_BASE_URL` | agent 启动参数             | 必填。ClawManager 基础地址 |
 | `OPENCLAW_AGENT_INITIAL_CONFIG_REVISION_ID` | agent 启动参数      | 可选。初始配置 revision id |
-| `OPENCLAW_AGENT_OPENCLAW_COMMAND` | 进程托管参数                  | 可选。默认是 `openclaw gateway` |
+| `OPENCLAW_AGENT_OPENCLAW_COMMAND` | 进程托管参数                  | 可选。默认是 `openclaw gateway run` |
+| `OPENCLAW_AGENT_OPENCLAW_DOCTOR_COMMAND` | 启动修复参数          | 可选。默认是 `openclaw doctor --fix` |
+| `OPENCLAW_AGENT_OPENCLAW_DOCTOR_POLICY` | 启动修复策略          | 可选。`auto`（默认）、`always` 或 `never`；`auto` 不会在首次拉起前执行 doctor，只会在 gateway 拉起失败、启动阶段退出或健康检查未就绪时自动修复 |
+| `OPENCLAW_AGENT_OPENCLAW_STARTUP_HEALTH_TIMEOUT` | 进程托管参数 | 可选。默认 `90s`；gateway 健康检查未就绪时，等待多久后触发自动 doctor |
+| `OPENCLAW_AGENT_STARTUP_NOTIFICATION_MESSAGE` | 桌面通知文案      | 可选。默认是 `正在启动龙虾` |
+| `OPENCLAW_AGENT_STARTUP_REPAIR_NOTIFICATION_MESSAGE` | 桌面通知文案 | 可选。默认是 `正在修复启动环境，可能需要 1-2 分钟` |
 
 agent 默认配置位于 `/etc/openclaw-agent/config.yaml`，初次启动时由 `/defaults/openclaw-agent/config.yaml` 填充；本地健康与调试接口默认监听 `:18080`。
 

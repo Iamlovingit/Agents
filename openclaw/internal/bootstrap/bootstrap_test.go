@@ -96,6 +96,34 @@ func TestEnsureExtensionsDirCreates(t *testing.T) {
 	}
 }
 
+func TestEnsureDingtalkOpenclawSymlinkCreates(t *testing.T) {
+	global := filepath.Join(t.TempDir(), "openclaw")
+	if err := os.MkdirAll(global, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := openclawGlobalNodeModules
+	t.Cleanup(func() { openclawGlobalNodeModules = old })
+	openclawGlobalNodeModules = global
+
+	root := t.TempDir()
+	ext := filepath.Join(root, "extensions")
+	if err := os.MkdirAll(filepath.Join(ext, "dingtalk-connector"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appconfig.Config{OpenClawExtensionsDir: ext, DropUserName: ""}
+	if err := ensureDingtalkOpenclawSymlink(cfg); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ext, "dingtalk-connector", "node_modules", "openclaw")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != global {
+		t.Fatalf("link target: want %q, got %q", global, target)
+	}
+}
+
 func TestSyncAutostartInstallsOnlyMissing(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "defaults-autostart")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	appconfig "github.com/iamlovingit/clawmanager-openclaw-image/internal/config"
@@ -20,10 +21,12 @@ func (m *Manager) NormalizeActiveConfig() error {
 	if err != nil {
 		return err
 	}
-	if !changed {
-		return nil
+	if changed {
+		if err := os.WriteFile(m.cfg.OpenClawConfigPath, normalized, 0o600); err != nil {
+			return err
+		}
 	}
-	return os.WriteFile(m.cfg.OpenClawConfigPath, normalized, 0o600)
+	return normalizePluginInstallRegistry(m.cfg)
 }
 
 func normalizeConfigFile(path string, cfg appconfig.Config) ([]byte, bool, error) {
@@ -59,6 +62,44 @@ func normalizeConfigMap(content []byte, cfg appconfig.Config) ([]byte, bool, err
 	if err := applyChannelOverrides(parsed, channelOpts); err != nil {
 		return nil, false, err
 	}
+
+	normalized, err := rewriteConfig(parsed)
+	if err != nil {
+		return nil, false, err
+	}
+	return normalized, !bytes.Equal(content, normalized), nil
+}
+
+func normalizePluginInstallRegistry(cfg appconfig.Config) error {
+	registryPath := filepath.Join(filepath.Dir(cfg.OpenClawConfigPath), "plugins", "installs.json")
+	content, err := os.ReadFile(registryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read openclaw plugin registry: %w", err)
+	}
+
+	normalized, changed, err := normalizePluginInstallRegistryContent(content, cfg)
+	if err != nil {
+		return fmt.Errorf("normalize openclaw plugin registry: %w", err)
+	}
+	if !changed {
+		return nil
+	}
+	return os.WriteFile(registryPath, normalized, 0o600)
+}
+
+func normalizePluginInstallRegistryContent(content []byte, cfg appconfig.Config) ([]byte, bool, error) {
+	parsed, err := parseConfigJSON(content)
+	if err != nil {
+		return nil, false, err
+	}
+	if cfg.InstalledPluginPathPrefix == "" || cfg.OpenClawExtensionsDir == "" {
+		return content, false, nil
+	}
+
+	rewritePluginPathStrings(parsed, cfg.InstalledPluginPathPrefix, cfg.OpenClawExtensionsDir)
 
 	normalized, err := rewriteConfig(parsed)
 	if err != nil {

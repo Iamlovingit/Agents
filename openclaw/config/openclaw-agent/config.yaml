@@ -10,10 +10,18 @@ openclaw_command:
   - openclaw
   - gateway
   - run
+openclaw_doctor_command:
+  - openclaw
+  - doctor
+  - --fix
+openclaw_doctor_policy: auto
+startup_notification_message: 正在启动龙虾
+startup_repair_notification_message: 正在修复启动环境，可能需要 1-2 分钟
 openclaw_config_path: /config/.openclaw/openclaw.json
 openclaw_workspace_path: /config/.openclaw/workspace
 openclaw_skills_path: /config/.openclaw/workspace/skills
 openclaw_health_url: http://127.0.0.1:18789/health
+openclaw_startup_health_timeout: 90s
 heartbeat_interval: 15s
 state_report_interval: 45s
 command_poll_interval: 5s
