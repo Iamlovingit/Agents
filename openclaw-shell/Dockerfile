@@ -72,6 +72,7 @@ RUN apk add --no-cache \
 COPY openclaw/defaults-template/.openclaw /defaults/.openclaw
 COPY openclaw-shell/config/openclaw-shell-agent /defaults/openclaw-shell-agent
 COPY openclaw-shell/vendor-plugins/openclaw-redis-team.tgz /tmp/openclaw-redis-team.tgz
+COPY openclaw-shell/scripts/enable-redis-team-config.mjs /tmp/enable-redis-team-config.mjs
 COPY openclaw-shell/scripts/openclaw-shell-entrypoint /usr/local/bin/openclaw-shell-entrypoint
 COPY openclaw-shell/scripts/openclaw-shell-login /usr/local/lib/openclaw-shell/login.sh
 COPY --from=agent-builder /out/openclaw-agent /usr/local/bin/openclaw-agent
@@ -125,9 +126,10 @@ RUN set -eux; \
     chmod 644 /etc/tmux.conf; \
     cp /defaults/openclaw-shell-agent/config.yaml /etc/openclaw-agent/config.yaml; \
     HOME=/defaults openclaw plugins install /tmp/openclaw-redis-team.tgz; \
-    rm -f /tmp/openclaw-redis-team.tgz; \
     HOME=/defaults openclaw plugins install @dingtalk-real-ai/dingtalk-connector \
       || echo "warning: dingtalk-connector preinstall failed; continuing without bundled connector"; \
+    node /tmp/enable-redis-team-config.mjs /defaults/.openclaw/openclaw.json; \
+    rm -f /tmp/openclaw-redis-team.tgz /tmp/enable-redis-team-config.mjs; \
     chown -R abc:abc /config /etc/openclaw-agent /defaults/.openclaw
 
 EXPOSE 18789 18080

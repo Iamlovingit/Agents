@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -153,6 +154,35 @@ func TestEnsureTeamSharedDirsCreatesExpectedLayout(t *testing.T) {
 		if !info.IsDir() {
 			t.Fatalf("expected %s to be a directory", path)
 		}
+	}
+}
+
+func TestEnsureTeamSharedDirsWritesInitialStatusFromRole(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "team")
+	t.Setenv("CLAWMANAGER_TEAM_ENABLED", "true")
+	t.Setenv("CLAWMANAGER_TEAM_SHARED_DIR", root)
+	t.Setenv("CLAWMANAGER_TEAM_ID", "team-1")
+	t.Setenv("CLAWMANAGER_TEAM_ROLE", "developer")
+	t.Setenv("CLAWMANAGER_TEAM_MEMBER_ID", "")
+
+	if err := ensureTeamSharedDirs(appconfig.Config{DropUserName: ""}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusPath := filepath.Join(root, "status", "developer.json")
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("expected initial status file: %v", err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatalf("invalid status JSON: %v", err)
+	}
+	if got := status["memberId"]; got != "developer" {
+		t.Fatalf("memberId = %v, want developer", got)
+	}
+	if got := status["role"]; got != "developer" {
+		t.Fatalf("role = %v, want developer", got)
 	}
 }
 

@@ -1,11 +1,13 @@
 package bootstrap
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appconfig "github.com/iamlovingit/clawmanager-openclaw-image/internal/config"
 )
@@ -44,6 +46,10 @@ func ensureTeamSharedDirs(cfg appconfig.Config) error {
 		}
 	}
 
+	if err := writeInitialTeamStatus(root); err != nil {
+		return err
+	}
+
 	if os.Geteuid() == 0 && cfg.DropUserName != "" {
 		uid, gid, err := lookupDropUser(cfg.DropUserName)
 		if err != nil {
@@ -54,6 +60,76 @@ func ensureTeamSharedDirs(cfg appconfig.Config) error {
 		}
 	}
 	return nil
+}
+
+func writeInitialTeamStatus(root string) error {
+	memberID := firstNonEmptyEnv("CLAWMANAGER_TEAM_MEMBER_ID", "CLAWMANAGER_TEAM_ROLE")
+	if memberID == "" {
+		return nil
+	}
+	role := strings.TrimSpace(os.Getenv("CLAWMANAGER_TEAM_ROLE"))
+	if role == "" {
+		role = memberID
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := map[string]any{
+		"teamId":       strings.TrimSpace(os.Getenv("CLAWMANAGER_TEAM_ID")),
+		"memberId":     memberID,
+		"role":         role,
+		"liveness":     "starting",
+		"runtime":      "starting",
+		"availability": "idle",
+		"lastSeenAt":   now,
+		"updatedAt":    now,
+		"source":       "openclaw-agent-bootstrap",
+	}
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal initial team status: %w", err)
+	}
+	data = append(data, '\n')
+	path := filepath.Join(root, "status", safeTeamStatusName(memberID)+".json")
+	if err := os.WriteFile(path, data, 0o664); err != nil {
+		return fmt.Errorf("write initial team status %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o664); err != nil {
+		return fmt.Errorf("chmod initial team status %s: %w", path, err)
+	}
+	return nil
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func safeTeamStatusName(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '.' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		if b.Len() >= 160 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func repairTeamSharedTree(root string, uid, gid int) error {
