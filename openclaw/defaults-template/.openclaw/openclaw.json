@@ -79,15 +79,7 @@
       "restart": true,
       "ownerDisplay": "raw"
     },
-    "channels": {
-      "redis-team": {
-        "accounts": {
-          "default": {
-            "fromEnv": true
-          }
-        }
-      }
-    },
+    "channels": {},
     "gateway": {
       "port": 18789,
       "mode": "local",
@@ -142,14 +134,16 @@
           "enabled": false
         },
         "wecom-openclaw-plugin": {
-          "enabled": true
+          "enabled": false
         },
         "redis-team": {
-          "enabled": true,
-          "config": {
-            "fromEnv": true
-          }
+          "enabled": false
         }
+      }
+    },
+    "messages": {
+      "groupChat": {
+        "visibleReplies": "automatic"
       }
     }
   }

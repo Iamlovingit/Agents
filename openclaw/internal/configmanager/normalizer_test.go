@@ -372,6 +372,217 @@ func TestChannelsMergeAcceptsRegistryInstalledNPMChannels(t *testing.T) {
 	}
 }
 
+func TestChannelsMergeAcceptsOpenClawStartupMetadataChannels(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	bundledDir := filepath.Join(root, "openclaw", "dist", "extensions")
+	if err := os.MkdirAll(bundledDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := []byte(`{"channelOptions":["feishu","telegram"]}`)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(bundledDir), "cli-startup-metadata.json"), metadata, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(sampleOpenClawConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAWMANAGER_OPENCLAW_CHANNELS_JSON", `{"feishu":{"enabled":true},"slack":{"enabled":true}}`)
+	t.Setenv("CLAWMANAGER_LLM_MODEL", "")
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "")
+	unsetEnvForTest(t, "CLAWMANAGER_LLM_API_KEY")
+	unsetEnvForTest(t, "OPENAI_API_KEY")
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: bundledDir,
+		OpenClawExtensionsDir:        t.TempDir(),
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfigForTest(t, configPath)
+	channels := nestedMapForTest(t, cfg, "channels")
+	if _, ok := channels["feishu"]; !ok {
+		t.Fatalf("expected startup metadata feishu channel to be preserved, got %#v", channels)
+	}
+	if _, ok := channels["slack"]; ok {
+		t.Fatalf("expected unsupported slack channel to be dropped, got %#v", channels)
+	}
+}
+
+func TestRedisTeamChannelRequiresTeamEnv(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	bundledDir := filepath.Join(root, "bundled")
+	userDir := filepath.Join(root, "extensions")
+	if err := os.MkdirAll(filepath.Join(userDir, "redis-team"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "redis-team", "openclaw.plugin.json"), []byte(`{"channels":["redis-team"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"channels":{"redis-team":{"accounts":{"default":{"fromEnv":true}}}}}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAWMANAGER_TEAM_ENABLED", "")
+	t.Setenv("CLAWMANAGER_LLM_MODEL", "")
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "")
+	unsetEnvForTest(t, "CLAWMANAGER_LLM_API_KEY")
+	unsetEnvForTest(t, "OPENAI_API_KEY")
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: bundledDir,
+		OpenClawExtensionsDir:        userDir,
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfigForTest(t, configPath)
+	channels := nestedMapForTest(t, cfg, "channels")
+	if _, ok := channels["redis-team"]; ok {
+		t.Fatalf("expected redis-team channel to be removed when team is disabled, got %#v", channels)
+	}
+}
+
+func TestRedisTeamChannelAddedWhenTeamEnvEnabled(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	bundledDir := filepath.Join(root, "bundled")
+	userDir := filepath.Join(root, "extensions")
+	if err := os.MkdirAll(filepath.Join(userDir, "redis-team"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "redis-team", "openclaw.plugin.json"), []byte(`{"channels":["redis-team"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"channels":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAWMANAGER_TEAM_ENABLED", "true")
+	t.Setenv("CLAWMANAGER_LLM_MODEL", "")
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "")
+	unsetEnvForTest(t, "CLAWMANAGER_LLM_API_KEY")
+	unsetEnvForTest(t, "OPENAI_API_KEY")
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: bundledDir,
+		OpenClawExtensionsDir:        userDir,
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfigForTest(t, configPath)
+	account := nestedMapForTest(t, cfg, "channels", "redis-team", "accounts", "default")
+	if got := account["fromEnv"]; got != true {
+		t.Fatalf("expected redis-team default account fromEnv=true, got %#v", got)
+	}
+}
+
+func TestChannelEnvControlsManagedChannelPluginEntries(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	userDir := filepath.Join(root, "extensions")
+	dingtalkDir := filepath.Join(userDir, "dingtalk")
+	wecomDir := filepath.Join(userDir, "wecom")
+	for _, dir := range []string{dingtalkDir, wecomDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dingtalkDir, "openclaw.plugin.json"), []byte(`{"channels":["dingtalk-connector"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wecomDir, "openclaw.plugin.json"), []byte(`{"channels":["wecom"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{
+		"channels": {},
+		"plugins": {
+			"entries": {
+				"dingtalk-connector": {"enabled": false},
+				"wecom-openclaw-plugin": {"enabled": true}
+			}
+		}
+	}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAWMANAGER_OPENCLAW_CHANNELS_JSON", `{"dingtalk-connector":{"enabled":true}}`)
+	t.Setenv("CLAWMANAGER_LLM_MODEL", "")
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "")
+	unsetEnvForTest(t, "CLAWMANAGER_LLM_API_KEY")
+	unsetEnvForTest(t, "OPENAI_API_KEY")
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: t.TempDir(),
+		OpenClawExtensionsDir:        userDir,
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfigForTest(t, configPath)
+	dingtalk := nestedMapForTest(t, cfg, "plugins", "entries", "dingtalk-connector")
+	if got := dingtalk["enabled"]; got != true {
+		t.Fatalf("expected dingtalk plugin enabled from channel env, got %#v", got)
+	}
+	wecom := nestedMapForTest(t, cfg, "plugins", "entries", "wecom-openclaw-plugin")
+	if got := wecom["enabled"]; got != false {
+		t.Fatalf("expected wecom plugin disabled without channel env, got %#v", got)
+	}
+}
+
+func TestManagedChannelPluginsDisabledWithoutChannelEnv(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "openclaw.json")
+	content := []byte(`{
+		"channels": {},
+		"plugins": {
+			"entries": {
+				"dingtalk-connector": {"enabled": true},
+				"wecom-openclaw-plugin": {"enabled": true}
+			}
+		}
+	}`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	unsetEnvForTest(t, "CLAWMANAGER_OPENCLAW_CHANNELS_JSON")
+	t.Setenv("CLAWMANAGER_LLM_MODEL", "")
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "")
+	unsetEnvForTest(t, "CLAWMANAGER_LLM_API_KEY")
+	unsetEnvForTest(t, "OPENAI_API_KEY")
+
+	manager := New(appconfig.Config{
+		OpenClawConfigPath:           configPath,
+		OpenClawBundledExtensionsDir: t.TempDir(),
+		OpenClawExtensionsDir:        t.TempDir(),
+	}, nil, nil)
+	if err := manager.NormalizeActiveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfigForTest(t, configPath)
+	for _, pluginID := range []string{"dingtalk-connector", "wecom-openclaw-plugin"} {
+		entry := nestedMapForTest(t, cfg, "plugins", "entries", pluginID)
+		if got := entry["enabled"]; got != false {
+			t.Fatalf("expected %s disabled without channel env, got %#v", pluginID, got)
+		}
+	}
+}
+
 func TestPluginInstallPathRewritten(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "openclaw.json")

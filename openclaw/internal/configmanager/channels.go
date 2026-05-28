@@ -12,6 +12,14 @@ import (
 )
 
 const pluginManifestName = "openclaw.plugin.json"
+const cliStartupMetadataName = "cli-startup-metadata.json"
+const redisTeamChannelID = "redis-team"
+
+var envManagedChannelPlugins = map[string][]string{
+	"dingtalk":           {"dingtalk-connector"},
+	"dingtalk-connector": {"dingtalk-connector"},
+	"wecom":              {"wecom-openclaw-plugin"},
+}
 
 // channelOverrides captures the inputs needed to reconcile the `channels`
 // subtree and to rewrite installed plugin paths, replacing the inline
@@ -47,7 +55,7 @@ func readChannelOverridesFromEnv(cfg appconfig.Config) channelOverrides {
 //     under /defaults/.openclaw/extensions/* point at the user extensions
 //     directory on /config;
 //   - sanitize the existing cfg.channels by dropping entries whose id is
-//     not advertised by any bundled or user-installed plugin;
+//     not advertised by OpenClaw startup metadata or any bundled/user-installed plugin;
 //   - merge any channels supplied via CLAWMANAGER_OPENCLAW_CHANNELS_JSON
 //     after applying the same sanitization.
 func applyChannelOverrides(cfg map[string]any, opts channelOverrides) error {
@@ -63,6 +71,7 @@ func applyChannelOverrides(cfg map[string]any, opts channelOverrides) error {
 	rewriteInstalledPluginPaths(cfg, opts.InstalledPluginPathPrefix, opts.UserExtensionsDir)
 
 	supported := map[string]struct{}{}
+	collectSupportedChannelIdsFromStartupMetadata(opts.BundledExtensionsDir, supported)
 	collectSupportedChannelIds(opts.BundledExtensionsDir, supported)
 	collectSupportedChannelIds(opts.UserExtensionsDir, supported)
 	collectSupportedChannelIdsFromRegistry(opts.PluginRegistryPath, opts.DefaultsDir, opts.ActiveConfigDir, supported)
@@ -74,6 +83,8 @@ func applyChannelOverrides(cfg map[string]any, opts channelOverrides) error {
 	for id, value := range fromEnv {
 		sanitized[id] = value
 	}
+	reconcileRedisTeamChannel(sanitized, supported)
+	reconcileEnvManagedChannelPlugins(cfg, fromEnv)
 	cfg["channels"] = sanitized
 	return nil
 }
@@ -106,6 +117,84 @@ func rewriteInstalledPluginPaths(cfg map[string]any, prefix, userExtensionsDir s
 		return
 	}
 	rewritePluginPathStrings(plugins, prefix, userExtensionsDir)
+}
+
+func collectSupportedChannelIdsFromStartupMetadata(bundledExtensionsDir string, out map[string]struct{}) {
+	if bundledExtensionsDir == "" {
+		return
+	}
+	metadataPath := filepath.Join(filepath.Dir(bundledExtensionsDir), cliStartupMetadataName)
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("configmanager: read startup metadata %s: %v", metadataPath, err)
+		}
+		return
+	}
+	var metadata struct {
+		ChannelOptions []string `json:"channelOptions"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		log.Printf("configmanager: parse startup metadata %s: %v", metadataPath, err)
+		return
+	}
+	for _, id := range metadata.ChannelOptions {
+		trimmed := strings.TrimSpace(id)
+		if trimmed != "" {
+			out[trimmed] = struct{}{}
+		}
+	}
+}
+
+func reconcileRedisTeamChannel(channels map[string]any, supported map[string]struct{}) {
+	if !teamEnabledFromEnv() {
+		delete(channels, redisTeamChannelID)
+		return
+	}
+	if _, ok := supported[redisTeamChannelID]; !ok {
+		return
+	}
+	if _, ok := channels[redisTeamChannelID]; ok {
+		return
+	}
+	channels[redisTeamChannelID] = map[string]any{
+		"accounts": map[string]any{
+			"default": map[string]any{
+				"fromEnv": true,
+			},
+		},
+	}
+}
+
+func reconcileEnvManagedChannelPlugins(cfg map[string]any, envChannels map[string]any) {
+	plugins := ensureObject(cfg, "plugins")
+	entries := ensureObject(plugins, "entries")
+	enabledPlugins := map[string]struct{}{}
+	for channelID := range envChannels {
+		for _, pluginID := range envManagedChannelPlugins[channelID] {
+			enabledPlugins[pluginID] = struct{}{}
+		}
+	}
+	managedPlugins := map[string]struct{}{}
+	for _, pluginIDs := range envManagedChannelPlugins {
+		for _, pluginID := range pluginIDs {
+			managedPlugins[pluginID] = struct{}{}
+		}
+	}
+	for pluginID := range managedPlugins {
+		entry := ensureObject(entries, pluginID)
+		_, enabled := enabledPlugins[pluginID]
+		entry["enabled"] = enabled
+	}
+}
+
+func teamEnabledFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CLAWMANAGER_TEAM_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func rewritePluginPathStrings(value any, prefix, userExtensionsDir string) any {
