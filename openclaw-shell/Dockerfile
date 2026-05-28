@@ -22,7 +22,7 @@ RUN set -eux; \
 
 FROM node:22-alpine
 
-ARG OPENCLAW_VERSION=v2026.4.27
+ARG OPENCLAW_VERSION=v2026.5.4
 
 ENV HOME=/config \
     SHELL=/bin/bash \
@@ -66,8 +66,13 @@ RUN apk add --no-cache \
       tmux \
       tzdata \
       unzip \
+    && apk add --no-cache --virtual .openclaw-build-deps \
+      g++ \
+      make \
+      python3 \
     && npm install -g "openclaw@${OPENCLAW_VERSION}" \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && apk del .openclaw-build-deps
 
 COPY openclaw/defaults-template/.openclaw /defaults/.openclaw
 COPY openclaw-shell/config/openclaw-shell-agent /defaults/openclaw-shell-agent
@@ -130,6 +135,8 @@ RUN set -eux; \
       || echo "warning: dingtalk-connector preinstall failed; continuing without bundled connector"; \
     HOME=/defaults openclaw plugins install @wecom/wecom-openclaw-plugin@beta \
       || echo "warning: wecom-openclaw-plugin preinstall failed; continuing without bundled connector"; \
+    HOME=/defaults openclaw plugins install @openclaw/feishu@2026.5.4 \
+      || echo "warning: feishu preinstall failed; continuing without bundled connector"; \
     node /tmp/enable-redis-team-config.mjs /defaults/.openclaw/openclaw.json; \
     rm -f /tmp/openclaw-redis-team.tgz /tmp/enable-redis-team-config.mjs; \
     chown -R abc:abc /config /etc/openclaw-agent /defaults/.openclaw
