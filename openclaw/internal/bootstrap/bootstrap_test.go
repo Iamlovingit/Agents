@@ -103,6 +103,7 @@ func TestSyncBundledRedisTeamPluginUpdatesExistingCopy(t *testing.T) {
 	extensionsDir := filepath.Join(root, "extensions")
 	defaultPlugin := filepath.Join(defaultsDir, "extensions", "redis-team")
 	userPlugin := filepath.Join(extensionsDir, "redis-team")
+	t.Setenv("CLAWMANAGER_TEAM_ENABLED", "true")
 
 	writeRedisTeamPluginForTest(t, defaultPlugin, "0.1.1", "new runtime")
 	writeRedisTeamPluginForTest(t, userPlugin, "0.1.0", "old runtime")
@@ -121,6 +122,28 @@ func TestSyncBundledRedisTeamPluginUpdatesExistingCopy(t *testing.T) {
 	}
 	if string(got) != "new runtime" {
 		t.Fatalf("expected redis-team plugin to be updated, got %q", got)
+	}
+}
+
+func TestSyncBundledRedisTeamPluginDisabledNoop(t *testing.T) {
+	root := t.TempDir()
+	defaultsDir := filepath.Join(root, "defaults")
+	extensionsDir := filepath.Join(root, "extensions")
+	defaultPlugin := filepath.Join(defaultsDir, "extensions", "redis-team")
+	userPlugin := filepath.Join(extensionsDir, "redis-team")
+	t.Setenv("CLAWMANAGER_TEAM_ENABLED", "")
+
+	writeRedisTeamPluginForTest(t, defaultPlugin, "0.1.1", "new runtime")
+
+	cfg := appconfig.Config{
+		OpenClawDefaultsDir:   defaultsDir,
+		OpenClawExtensionsDir: extensionsDir,
+	}
+	if err := syncBundledRedisTeamPlugin(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(userPlugin); !os.IsNotExist(err) {
+		t.Fatalf("expected redis-team plugin not to be synced for non-team instance, got err=%v", err)
 	}
 }
 
@@ -214,6 +237,41 @@ func TestEnsureDingtalkOpenclawSymlinkCreates(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(ext, "dingtalk-connector", "node_modules", "openclaw")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != global {
+		t.Fatalf("link target: want %q, got %q", global, target)
+	}
+}
+
+func TestEnsureDingtalkOpenclawSymlinkCreatesNPMPeerLink(t *testing.T) {
+	global := filepath.Join(t.TempDir(), "openclaw")
+	if err := os.MkdirAll(global, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := openclawGlobalNodeModules
+	t.Cleanup(func() { openclawGlobalNodeModules = old })
+	openclawGlobalNodeModules = global
+
+	root := t.TempDir()
+	configRoot := filepath.Join(root, ".openclaw")
+	npmRoot := filepath.Join(configRoot, "npm", "node_modules")
+	connectorDir := filepath.Join(npmRoot, "@dingtalk-real-ai", "dingtalk-connector")
+	if err := os.MkdirAll(connectorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appconfig.Config{
+		OpenClawConfigPath: filepath.Join(configRoot, "openclaw.json"),
+		DropUserName:       "",
+	}
+	if err := ensureDingtalkOpenclawSymlink(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(npmRoot, "openclaw")
 	target, err := os.Readlink(link)
 	if err != nil {
 		t.Fatal(err)

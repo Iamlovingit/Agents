@@ -56,6 +56,7 @@ RUN sed -i 's/\r$//' /etc/services.d/openclaw-agent/run \
   && HOME=/defaults openclaw plugins install /tmp/openclaw-redis-team.tgz \
   && HOME=/defaults openclaw plugins install @dingtalk-real-ai/dingtalk-connector \
   && HOME=/defaults openclaw plugins install @wecom/wecom-openclaw-plugin@beta \
+  && HOME=/defaults openclaw plugins install @openclaw/feishu@2026.5.4 \
   && rm -f /tmp/openclaw-redis-team.tgz \
   && chown -R abc:abc /defaults/.openclaw \
   && chown -R abc:abc /defaults/.config \

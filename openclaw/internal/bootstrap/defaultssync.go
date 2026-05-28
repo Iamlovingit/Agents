@@ -47,6 +47,9 @@ func ensureExtensionsDir(cfg appconfig.Config) error {
 }
 
 func syncBundledRedisTeamPlugin(cfg appconfig.Config) error {
+	if !teamEnabledFromEnv() {
+		return nil
+	}
 	if cfg.OpenClawDefaultsDir == "" || cfg.OpenClawExtensionsDir == "" {
 		return nil
 	}

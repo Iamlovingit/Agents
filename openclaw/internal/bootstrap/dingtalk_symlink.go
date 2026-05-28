@@ -13,21 +13,47 @@ var openclawGlobalNodeModules = "/usr/local/lib/node_modules/openclaw"
 
 // ensureDingtalkOpenclawSymlink runs after defaults sync and applyOwnership. It
 // makes dingtalk-connector resolve the "openclaw" package the same as the
-// image-wide install: node_modules/openclaw -> /usr/local/lib/node_modules/openclaw
+// image-wide install: node_modules/openclaw -> /usr/local/lib/node_modules/openclaw.
 func ensureDingtalkOpenclawSymlink(cfg appconfig.Config) error {
-	if cfg.OpenClawExtensionsDir == "" {
-		return nil
+	linkPaths := dingtalkOpenclawSymlinkPaths(cfg)
+	for _, linkPath := range linkPaths {
+		if err := ensureOpenclawSymlinkOwned(cfg, linkPath); err != nil {
+			return err
+		}
 	}
-	connectorDir := filepath.Join(cfg.OpenClawExtensionsDir, "dingtalk-connector")
-	if !pathExists(connectorDir) {
-		return nil
+	return nil
+}
+
+func dingtalkOpenclawSymlinkPaths(cfg appconfig.Config) []string {
+	var paths []string
+	if cfg.OpenClawExtensionsDir != "" {
+		connectorDir := filepath.Join(cfg.OpenClawExtensionsDir, "dingtalk-connector")
+		if pathExists(connectorDir) {
+			paths = append(paths, filepath.Join(connectorDir, "node_modules", "openclaw"))
+		}
 	}
-	linkPath := filepath.Join(connectorDir, "node_modules", "openclaw")
+
+	if npmNodeModulesDir := openClawUserNPMNodeModulesDir(cfg); npmNodeModulesDir != "" {
+		connectorDir := filepath.Join(npmNodeModulesDir, "@dingtalk-real-ai", "dingtalk-connector")
+		if pathExists(connectorDir) {
+			paths = append(paths, filepath.Join(npmNodeModulesDir, "openclaw"))
+		}
+	}
+	return paths
+}
+
+func openClawUserNPMNodeModulesDir(cfg appconfig.Config) string {
+	if cfg.OpenClawConfigPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(cfg.OpenClawConfigPath), "npm", "node_modules")
+}
+
+func ensureOpenclawSymlinkOwned(cfg appconfig.Config, linkPath string) error {
 	parent := filepath.Dir(linkPath)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", parent, err)
 	}
-
 	if err := ensureSymlink(openclawGlobalNodeModules, linkPath); err != nil {
 		return err
 	}
